@@ -13,6 +13,10 @@ voice:
   kokoro_voice: af_heart
   speed: 1.1                # kokoro engine: 1.0 = natural
 
+alerts:
+  y_pct: 3.5                # status pill vertical center, % of screen height (0 = top)
+  duration_s: 1.2           # how long the pill stays up
+
 headers:
   rate_factor: 0.85         # headers read slower
   pause_before_ms: 500

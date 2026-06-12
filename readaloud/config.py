@@ -26,6 +26,10 @@ DEFAULTS: dict[str, Any] = {
         "kokoro_voice": "af_heart",
         "speed": 1.1,
     },
+    "alerts": {
+        "y_pct": 3.5,  # vertical center of the status pill, % of screen height
+        "duration_s": 1.2,
+    },
     "headers": {
         "rate_factor": 0.85,
         "pause_before_ms": 500,

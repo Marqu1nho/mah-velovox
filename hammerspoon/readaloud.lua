@@ -79,14 +79,86 @@ local function dlog(fmt, ...)
   end
 end
 
+-- Status pill: a small always-on-top canvas, horizontally centered with its
+-- center at alerts.y_pct% of the screen's usable height (0 = top, 100 =
+-- bottom). Replaces hs.alert, whose center-screen position is not adjustable.
+local pillCanvas = nil
+local pillTimer = nil
+
 local function alert(msg)
-  if cfgGet("hotkeys.show_alerts", true) then
-    hs.alert.show(msg, 0.8)
-  end
+  if not cfgGet("hotkeys.show_alerts", true) then return end
+  if pillTimer then pillTimer:stop(); pillTimer = nil end
+  if pillCanvas then pillCanvas:delete(); pillCanvas = nil end
+
+  local screen = hs.screen.mainScreen():frame()
+  local yPct = tonumber(cfgGet("alerts.y_pct", 3.5)) or 3.5
+  local duration = tonumber(cfgGet("alerts.duration_s", 1.2)) or 1.2
+
+  local styled = hs.styledtext.new(msg, {
+    font = { name = ".AppleSystemUIFont", size = 16 },
+    color = { white = 1.0, alpha = 1.0 },
+  })
+  local c = hs.canvas.new({ x = 0, y = 0, w = 10, h = 10 })
+  local size = c:minimumTextSize(styled)
+  local padX, padY = 18, 8
+  local w, h = size.w + padX * 2, size.h + padY * 2
+  c:frame({
+    x = screen.x + (screen.w - w) / 2,
+    y = screen.y + (screen.h * yPct / 100) - h / 2,
+    w = w,
+    h = h,
+  })
+  c[1] = {
+    type = "rectangle",
+    action = "fill",
+    roundedRectRadii = { xRadius = h / 2, yRadius = h / 2 },
+    fillColor = { red = 0, green = 0, blue = 0, alpha = 0.72 },
+  }
+  c[2] = {
+    type = "text",
+    text = styled,
+    frame = { x = padX, y = padY, w = size.w, h = size.h },
+  }
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behaviorAsLabels({ "canJoinAllSpaces", "transient" })
+  c:show()
+  pillCanvas = c
+  pillTimer = hs.timer.doAfter(duration, function()
+    pillTimer = nil
+    if pillCanvas then
+      pillCanvas:delete(0.4)
+      pillCanvas = nil
+    end
+  end)
 end
 
 local function isRunning()
   return readerTask ~= nil and readerTask:isRunning()
+end
+
+-- A reader we no longer hold a task handle for (e.g. it survived a
+-- Hammerspoon reload). Identified via the CLI's single-instance pidfile.
+local PIDFILE = os.getenv("HOME") .. "/.local/state/readaloud/readaloud.pid"
+
+local function orphanReaderPid()
+  local fh = io.open(PIDFILE, "r")
+  if not fh then return nil end
+  local pid = tonumber((fh:read("a") or ""):match("%d+"))
+  fh:close()
+  if pid and os.execute(string.format("/bin/kill -0 %d 2>/dev/null", pid)) then
+    return pid
+  end
+  return nil
+end
+
+local function stopOrphanReader()
+  local pid = orphanReaderPid()
+  if pid then
+    os.execute(string.format("/bin/kill -TERM %d 2>/dev/null", pid))
+    dlog("stopped orphaned reader pid=%d", pid)
+    return true
+  end
+  return false
 end
 
 local function stopReader()
@@ -252,6 +324,10 @@ local function onToggle()
     alert("■ stopped")
     return
   end
+  if stopOrphanReader() then
+    alert("■ stopped")
+    return
+  end
   local text = captureSelection()
   if not text or #text == 0 then
     alert("readaloud: no selection")
@@ -263,6 +339,10 @@ end
 local function onReadWindow()
   if isRunning() then
     stopReader()
+    alert("■ stopped")
+    return
+  end
+  if stopOrphanReader() then
     alert("■ stopped")
     return
   end
