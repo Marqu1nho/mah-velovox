@@ -124,10 +124,11 @@ def test_clean_emoji_skip_default():
 
 
 def test_clean_emoji_name():
-    text = "great 🎉 work"
+    text = "deploy the 🚀 now"
     out = clean(text, _cfg(**{"clean.emoji": "name"}))
-    assert "🎉" not in out
-    assert "emoji" in out
+    assert "🚀" not in out
+    # name mode emits the real Unicode name, not a generic token.
+    assert "rocket" in out
 
 
 def test_clean_drops_symbol_only_lines():

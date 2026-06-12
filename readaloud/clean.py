@@ -8,6 +8,7 @@ lines). Output is clean prose ready for markdown parsing.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 # --- ANSI / VT escape sequences -------------------------------------------
@@ -48,8 +49,11 @@ _EMOJI = re.compile(
     flags=re.UNICODE,
 )
 
-# Prompt markers at the start of a line.
-_PROMPT_MARKER = re.compile(r"^[ \t]*(?:❯|➜|▶|→|\$|>)\s+")
+# Prompt markers at the start of a line. `>` is deliberately NOT stripped: it
+# is a markdown blockquote marker far more often than a shell prompt, and
+# parse.py handles blockquotes. The spec only asks to strip `>` "when clearly a
+# prompt"; a bare `>` is not clearly a prompt, so we leave it for the parser.
+_PROMPT_MARKER = re.compile(r"^[ \t]*(?:❯|%|\$)\s+")
 
 # URL detection.
 _URL = re.compile(r"https?://[^\s<>()\[\]]+", re.IGNORECASE)
@@ -117,10 +121,21 @@ def _apply_paths(text: str, mode: str) -> str:
 
 
 def _apply_emoji(text: str, mode: str) -> str:
-    if mode == "name":
-        # We don't ship a full emoji name table; collapse to a generic token.
-        return _EMOJI.sub(" emoji ", text)
-    return _EMOJI.sub("", text)
+    if mode != "name":
+        return _EMOJI.sub("", text)
+
+    def repl(m: re.Match[str]) -> str:
+        # Replace each emoji run with the Unicode names of its characters
+        # (e.g. 🚀 -> "rocket"), skipping joiners/variation selectors that
+        # carry no spoken meaning.
+        names: list[str] = []
+        for ch in m.group(0):
+            name = unicodedata.name(ch, "").lower()
+            if name and "variation selector" not in name and "zero width" not in name:
+                names.append(name)
+        return f" {' '.join(names)} " if names else " "
+
+    return _EMOJI.sub(repl, text)
 
 
 def _strip_line_noise(line: str) -> str:
@@ -213,6 +228,9 @@ def clean(text: str, cfg: dict[str, Any]) -> str:
     emoji_mode = clean_cfg.get("emoji", "skip")
 
     text = strip_ansi(text)
+    # Normalize CRLF / lone CR to LF so the line-based passes below never see
+    # stray carriage returns mid-pipeline (strip_ansi's C0 class skips \x0d).
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     raw_lines = text.split("\n")
 

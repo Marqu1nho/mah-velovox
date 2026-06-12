@@ -192,25 +192,30 @@ def parse(text: str, cfg: dict[str, Any]) -> list[Block]:
     return blocks
 
 
-_BOLD_ITALIC = re.compile(r"(\*{1,3}|_{1,3})(.+?)\1")
-_STRIKE = re.compile(r"~~(.+?)~~")
+# Bold uses doubled markers; italic uses single markers but the single-marker
+# regex is guarded so word-internal underscores (snake_case identifiers like
+# my_var_name) and lone asterisks (multiplication: a * b) survive untouched.
 _INLINE_CODE = re.compile(r"`([^`]+)`")
-_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_BOLD = re.compile(r"(\*\*|__)(.+?)\1")
+_ITALIC = re.compile(r"(?<![\w*_])([*_])(?!\s)(.+?)(?<!\s)\1(?![\w*_])")
+_STRIKE = re.compile(r"~~(.+?)~~")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]*)\)")
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]*)\)")
 
 
 def _strip_inline(text: str) -> str:
     """Strip inline markdown markers for the ear.
 
+    - Images ![alt](url) -> alt
     - Markdown links [text](url) -> text
     - Inline code `x` -> x (read literally)
-    - Bold/italic/strikethrough markers removed
+    - Bold/italic/strikethrough markers removed, but word-internal underscores
+      (snake_case) and lone asterisks are preserved.
     """
+    text = _MD_IMAGE.sub(lambda m: m.group(1), text)
     text = _MD_LINK.sub(lambda m: m.group(1), text)
     text = _INLINE_CODE.sub(lambda m: m.group(1), text)
+    text = _BOLD.sub(lambda m: m.group(2), text)
     text = _STRIKE.sub(lambda m: m.group(1), text)
-    # Apply emphasis stripping repeatedly to handle nesting.
-    prev = None
-    while prev != text:
-        prev = text
-        text = _BOLD_ITALIC.sub(lambda m: m.group(2), text)
+    text = _ITALIC.sub(lambda m: m.group(2), text)
     return text.strip()

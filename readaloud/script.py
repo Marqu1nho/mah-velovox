@@ -28,17 +28,69 @@ class Chunk:
         return asdict(self)
 
 
-# Sentence splitter: split on ., !, ? followed by whitespace, keeping the
-# delimiter. Avoids splitting common abbreviations minimally.
-_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# Sentence splitting: candidate boundaries are . ! ? (plus optional closing
+# quotes/parens) followed by whitespace and an uppercase/quote/digit start.
+# Candidates preceded by a known abbreviation are rejected, decimals are
+# protected (the digit-start lookahead never fires mid-number), and very long
+# sentences are sub-split at commas/semicolons so stop always feels instant.
+_SENTENCE_BOUNDARY_RE = re.compile(
+    r"[.!?][\"')\]”’]*\s+(?=[\"'(\[“‘]?[A-Z0-9])"
+)
+_ABBREVIATIONS = frozenset(
+    a.lower() for a in
+    ("e.g", "i.e", "etc", "vs", "cf", "mr", "mrs", "ms", "dr",
+     "prof", "st", "no", "fig", "approx", "ca", "al")
+)
+
+_MAX_CHUNK_CHARS = 500  # hard cap so stop always feels instant
 
 
-def _split_sentences(text: str) -> list[str]:
+def _ends_with_abbreviation(text: str, dot_index: int) -> bool:
+    """True if the '.' at dot_index terminates a known abbreviation."""
+    word_start = dot_index
+    while word_start > 0 and (text[word_start - 1].isalnum()
+                              or text[word_start - 1] == "."):
+        word_start -= 1
+    word = text[word_start:dot_index].lower().lstrip(".")
+    return word in _ABBREVIATIONS
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split a paragraph into sentence-sized pieces; very long sentences are
+    further split at commas/semicolons so stop feels instant and kokoro can
+    pipeline synthesis."""
     text = text.strip()
     if not text:
         return []
-    parts = _SENT_SPLIT.split(text)
-    return [p.strip() for p in parts if p.strip()]
+    parts: list[str] = []
+    start = 0
+    for match in _SENTENCE_BOUNDARY_RE.finditer(text):
+        punct = match.group(0)[0]
+        if punct == "." and _ends_with_abbreviation(text, match.start()):
+            continue
+        parts.append(text[start:match.end()].strip())
+        start = match.end()
+    if start < len(text):
+        parts.append(text[start:].strip())
+    parts = [p for p in parts if p]
+
+    out: list[str] = []
+    for part in parts:
+        while len(part) > _MAX_CHUNK_CHARS:
+            cut = max(part.rfind(", ", 0, _MAX_CHUNK_CHARS),
+                      part.rfind("; ", 0, _MAX_CHUNK_CHARS),
+                      part.rfind(" ", 0, _MAX_CHUNK_CHARS))
+            if cut <= 0:
+                cut = _MAX_CHUNK_CHARS
+            out.append(part[:cut + 1].strip().rstrip(",;"))
+            part = part[cut + 1:].strip()
+        if part:
+            out.append(part)
+    return out
+
+
+# Backwards-compatible alias for internal callers.
+_split_sentences = split_sentences
 
 
 def build_script(blocks: list[Block], cfg: dict[str, Any]) -> list[Chunk]:
