@@ -5,8 +5,17 @@ import pytest
 from readaloud.config import ConfigError, DEFAULTS, load_config
 
 
-def test_load_missing_file_returns_defaults(tmp_path):
-    cfg = load_config(tmp_path / "nope.yaml")
+def test_explicit_missing_path_is_error(tmp_path):
+    # An explicit --config path that does not exist is a user error, not a
+    # silent fall-through to defaults.
+    with pytest.raises(ConfigError, match="not found"):
+        load_config(tmp_path / "nope.yaml")
+
+
+def test_default_path_missing_returns_defaults(monkeypatch, tmp_path):
+    # With no explicit path and no file at the default location, pure defaults.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    cfg = load_config()
     assert cfg["engine"] == "say"
     assert cfg["voice"]["base_wpm"] == 240
 
@@ -62,6 +71,55 @@ def test_empty_file_returns_defaults(tmp_path):
     p.write_text("")
     cfg = load_config(p)
     assert cfg == DEFAULTS
+
+
+@pytest.mark.parametrize("key,yaml_snippet", [
+    ("code_blocks.mode", "code_blocks:\n  mode: hum\n"),
+    ("clean.rejoin", "clean:\n  rejoin: sometimes\n"),
+    ("clean.urls", "clean:\n  urls: shorten\n"),
+    ("clean.paths", "clean:\n  paths: dirname\n"),
+    ("clean.emoji", "clean:\n  emoji: speak\n"),
+])
+def test_enum_keys_validated(tmp_path, key, yaml_snippet):
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml_snippet)
+    with pytest.raises(ConfigError, match=key.replace(".", r"\.")):
+        load_config(p)
+
+
+def test_negative_wpm_rejected(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("voice:\n  base_wpm: -10\n")
+    with pytest.raises(ConfigError, match="base_wpm"):
+        load_config(p)
+
+
+def test_bool_wpm_rejected(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("voice:\n  base_wpm: true\n")
+    with pytest.raises(ConfigError, match="base_wpm"):
+        load_config(p)
+
+
+def test_negative_pause_rejected(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("pauses:\n  paragraph_ms: -5\n")
+    with pytest.raises(ConfigError, match="paragraph_ms"):
+        load_config(p)
+
+
+def test_zero_pause_allowed(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("pauses:\n  paragraph_ms: 0\n")
+    cfg = load_config(p)
+    assert cfg["pauses"]["paragraph_ms"] == 0
+
+
+def test_malformed_yaml_clear_error(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("engine: [unclosed\n")
+    with pytest.raises(ConfigError, match="parse"):
+        load_config(p)
 
 
 def test_defaults_match_spec_keys():

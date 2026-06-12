@@ -175,13 +175,22 @@ def main(argv: list[str] | None = None) -> int:
         logging.getLogger("readaloud").info("another reader is running; exiting")
         return 0
 
-    engine = _make_engine(cfg)
+    # Engine construction can raise (e.g. missing kokoro models, no say binary).
+    # Build it inside a guard so the user gets a clean message, not a raw
+    # traceback, and the single-instance pidfile is released.
+    try:
+        engine = _make_engine(cfg)
+    except Exception as exc:
+        _release_single_instance()
+        print(f"readaloud: engine error: {exc}", file=sys.stderr)
+        return 3
 
     def _handle_stop(signum, frame):  # noqa: ARG001
         engine.stop()
 
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
+    signal.signal(signal.SIGHUP, _handle_stop)
 
     try:
         engine.speak(chunks)

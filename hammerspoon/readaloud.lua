@@ -212,12 +212,16 @@ local function captureSelection()
   local text = nil
   local restored = false
 
-  -- Ensure clipboard is always restored, even on error.
+  -- Ensure clipboard is always restored, even on error. If the clipboard was
+  -- empty before our ⌘C and the copy populated it, clear it again so we don't
+  -- leak the captured selection into an otherwise-empty pasteboard.
   local function restore()
     if not restored then
       restored = true
       if saved ~= nil then
         hs.pasteboard.setContents(saved)
+      elseif hs.pasteboard.changeCount() ~= savedCount then
+        hs.pasteboard.clearContents()
       end
     end
   end

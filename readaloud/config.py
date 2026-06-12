@@ -116,6 +116,36 @@ def _validate(cfg: dict[str, Any]) -> None:
                 f"Allowed values: {allowed_str}."
             )
 
+    # Numeric sanity: these must be positive numbers (bools excluded).
+    for dotted in (
+        "voice.base_wpm",
+        "voice.speed",
+        "headers.rate_factor",
+        "window_read.max_chars",
+        "limits.max_selection_chars",
+    ):
+        value = _get_dotted(cfg, dotted)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise ConfigError(
+                f"Invalid value for '{dotted}': {value!r}. "
+                f"Expected a positive number."
+            )
+
+    # Pause/duration knobs may be zero but never negative.
+    for dotted in (
+        "headers.pause_before_ms",
+        "headers.pause_after_ms",
+        "pauses.paragraph_ms",
+        "pauses.list_item_ms",
+        "pauses.horizontal_rule_ms",
+    ):
+        value = _get_dotted(cfg, dotted)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            raise ConfigError(
+                f"Invalid value for '{dotted}': {value!r}. "
+                f"Expected a non-negative number."
+            )
+
 
 def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     """Load config from ``path`` (or the default location), merged over defaults.
@@ -123,7 +153,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     Missing file -> defaults. Malformed YAML or a non-mapping top level ->
     ConfigError. Invalid enum values -> ConfigError with a clear message.
     """
-    cfg_path = Path(path) if path is not None else default_config_path()
+    explicit = path is not None
+    cfg_path = Path(path).expanduser() if explicit else default_config_path()
 
     user_cfg: dict[str, Any] = {}
     if cfg_path.exists():
@@ -138,6 +169,11 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
                 f"Config file {cfg_path} must contain a YAML mapping at the top level."
             )
         user_cfg = raw
+    elif explicit:
+        # A missing default config is fine (pure defaults); an explicit
+        # --config path that doesn't exist is a user error, not a silent
+        # fall-through to defaults.
+        raise ConfigError(f"config file not found: {cfg_path}")
 
     merged = _deep_merge(DEFAULTS, user_cfg)
     _validate(merged)

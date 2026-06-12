@@ -87,28 +87,34 @@ ONNX="$MODEL_DIR/kokoro-v1.0.onnx"
 VOICES="$MODEL_DIR/voices-v1.0.bin"
 BASE_URL="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 
-download_models() {
-  mkdir -p "$MODEL_DIR"
-  if [ -f "$ONNX" ]; then
-    say "kokoro onnx model already present; skipping."
-  else
-    say "Downloading kokoro-v1.0.onnx (~310 MB)…"
-    curl -fSL --retry 3 -o "$ONNX.part" "$BASE_URL/kokoro-v1.0.onnx"
-    mv "$ONNX.part" "$ONNX"
+# Download one model file. Returns non-zero (without aborting under set -e,
+# because callers test it) if the download fails, cleaning up the partial.
+download_model() {
+  local name="$1"
+  local dest="$MODEL_DIR/$name"
+  if [ -f "$dest" ]; then
+    say "kokoro model present: $name (skipping download)."
+    return 0
   fi
-  if [ -f "$VOICES" ]; then
-    say "kokoro voices already present; skipping."
+  say "Downloading $name (kokoro models are large; ~340 MB total)…"
+  if curl -fSL --retry 3 --progress-bar -o "$dest.part" "$BASE_URL/$name"; then
+    mv "$dest.part" "$dest"
   else
-    say "Downloading voices-v1.0.bin (~27 MB)…"
-    curl -fSL --retry 3 -o "$VOICES.part" "$BASE_URL/voices-v1.0.bin"
-    mv "$VOICES.part" "$VOICES"
+    rm -f "$dest.part"
+    return 1
   fi
 }
 
 if [ "$NO_KOKORO" -eq 1 ]; then
   say "--no-kokoro: skipping kokoro model download."
 else
-  download_models
+  mkdir -p "$MODEL_DIR"
+  if ! download_model "kokoro-v1.0.onnx" || ! download_model "voices-v1.0.bin"; then
+    # Non-fatal: the default engine is `say`, which needs no model files. A
+    # network failure must not abort the whole install.
+    warn "kokoro model download failed — 'engine: say' still works."
+    warn "Re-run ./install.sh later to retry, or pass --no-kokoro to silence this."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
