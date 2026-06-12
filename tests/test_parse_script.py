@@ -78,6 +78,32 @@ def test_parse_horizontal_rule():
     assert any(b.kind == "hr" for b in blocks)
 
 
+def test_parse_blockquote_merged():
+    blocks = parse("> a quoted line\n> that continues", DEFAULTS)
+    quotes = [b for b in blocks if b.kind == "blockquote"]
+    assert len(quotes) == 1
+    assert quotes[0].text == "a quoted line that continues"
+
+
+def test_parse_preserves_snake_case_identifiers():
+    blocks = parse("call my_var_name in the loop", DEFAULTS)
+    assert blocks[0].text == "call my_var_name in the loop"
+
+
+def test_parse_strips_bold_and_italic_keeps_lone_asterisk():
+    blocks = parse("this **bold** and *ital* but a * b stays", DEFAULTS)
+    text = blocks[0].text
+    assert "bold" in text and "ital" in text
+    assert "**" not in text
+    assert "a * b" in text
+
+
+def test_parse_image_keeps_alt_text():
+    blocks = parse("see ![the diagram](x.png) above", DEFAULTS)
+    assert "the diagram" in blocks[0].text
+    assert "x.png" not in blocks[0].text
+
+
 def test_script_header_is_slower_with_pauses():
     chunks = make_script("## Section\n\nbody", DEFAULTS)
     header = chunks[0]
@@ -136,6 +162,42 @@ def test_script_table_read_row_wise():
     table = next(c for c in chunks if c.kind == "table")
     assert "Name: Alice" in table.text
     assert "Age: 30" in table.text
+
+
+def test_script_blockquote_becomes_spoken_chunk():
+    chunks = make_script("> a wise quote here", DEFAULTS)
+    quote = next(c for c in chunks if c.kind == "blockquote")
+    assert "a wise quote here" in quote.text
+
+
+def test_split_sentences_basic():
+    from readaloud.script import split_sentences
+
+    assert split_sentences("One here. Two there. Three!") == [
+        "One here.", "Two there.", "Three!"]
+
+
+def test_split_sentences_protects_abbreviations():
+    from readaloud.script import split_sentences
+
+    out = split_sentences("Use markdown, e.g. headers. Then continue.")
+    assert out == ["Use markdown, e.g. headers.", "Then continue."]
+
+
+def test_split_sentences_protects_decimals():
+    from readaloud.script import split_sentences
+
+    out = split_sentences("Version 2.5 shipped today. It works.")
+    assert out == ["Version 2.5 shipped today.", "It works."]
+
+
+def test_split_sentences_hard_caps_very_long_sentences():
+    from readaloud.script import split_sentences
+
+    long = "word " * 200  # 1000 chars, no sentence punctuation
+    out = split_sentences(long.strip())
+    assert len(out) > 1
+    assert all(len(p) <= 501 for p in out)
 
 
 def test_end_to_end_tui_paste_pipeline():

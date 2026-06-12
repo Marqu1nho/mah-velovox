@@ -2,7 +2,21 @@
 
 import pytest
 
-from readaloud.config import DEFAULTS, load_config
+from readaloud.config import DEFAULTS
+
+
+@pytest.fixture(autouse=True)
+def isolated_xdg(tmp_path_factory, monkeypatch):
+    """Point XDG config/state/data at throwaway dirs for every test so nothing
+    ever reads or writes the developer's real ~/.config/readaloud/config.yaml
+    or ~/.local/state. Tests that need a specific config pass --config to a
+    tmp file explicitly; with no file present here, load_config() returns pure
+    defaults regardless of the host machine's state.
+    """
+    base = tmp_path_factory.mktemp("xdg")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(base / "state"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "data"))
 
 
 @pytest.fixture
