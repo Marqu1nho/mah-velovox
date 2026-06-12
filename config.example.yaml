@@ -9,7 +9,7 @@ hotkeys:
 
 voice:
   say_voice: system         # system = macOS Spoken Content voice (Siri loophole) | a named voice e.g. "Zoe (Premium)"
-  base_wpm: 190             # say engine speaking rate (words per minute)
+  base_wpm: 240             # say engine speaking rate (words per minute)
   kokoro_voice: af_heart
   speed: 1.1                # kokoro engine: 1.0 = natural
 

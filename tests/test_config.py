@@ -8,7 +8,7 @@ from readaloud.config import ConfigError, DEFAULTS, load_config
 def test_load_missing_file_returns_defaults(tmp_path):
     cfg = load_config(tmp_path / "nope.yaml")
     assert cfg["engine"] == "say"
-    assert cfg["voice"]["base_wpm"] == 190
+    assert cfg["voice"]["base_wpm"] == 240
 
 
 def test_deep_merge_preserves_unspecified_keys(tmp_path):
@@ -17,7 +17,7 @@ def test_deep_merge_preserves_unspecified_keys(tmp_path):
     cfg = load_config(p)
     assert cfg["voice"]["speed"] == 1.4
     # Other voice keys retain defaults.
-    assert cfg["voice"]["base_wpm"] == 190
+    assert cfg["voice"]["base_wpm"] == 240
     assert cfg["voice"]["say_voice"] == "system"
 
 

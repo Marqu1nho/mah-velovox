@@ -11,3 +11,6 @@ wheels/
 
 # Test caches
 .pytest_cache/
+
+# Experiment worktrees
+.worktrees/

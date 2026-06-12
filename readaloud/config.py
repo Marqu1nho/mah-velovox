@@ -22,7 +22,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "voice": {
         "say_voice": "system",
-        "base_wpm": 190,
+        "base_wpm": 240,
         "kokoro_voice": "af_heart",
         "speed": 1.1,
     },

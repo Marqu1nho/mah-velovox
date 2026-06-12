@@ -65,6 +65,20 @@ end
 -- ---------------------------------------------------------------------------
 local readerTask = nil
 
+-- Diagnostics log, readable from a shell while debugging:
+--   tail -f ~/.local/state/readaloud/hammerspoon.log
+local LOG_PATH = os.getenv("HOME") .. "/.local/state/readaloud/hammerspoon.log"
+
+local function dlog(fmt, ...)
+  local msg = string.format(fmt, ...)
+  hs.printf("readaloud: %s", msg)
+  local fh = io.open(LOG_PATH, "a")
+  if fh then
+    fh:write(os.date("%H:%M:%S "), msg, "\n")
+    fh:close()
+  end
+end
+
 local function alert(msg)
   if cfgGet("hotkeys.show_alerts", true) then
     hs.alert.show(msg, 0.8)
@@ -97,12 +111,22 @@ local function startReader(text, mode)
     return
   end
   local arg = (mode == "window") and "--window" or "--stdin"
-  readerTask = hs.task.new(CLI, function(exitCode, _, _)
+  readerTask = hs.task.new(CLI, function(exitCode, stdOut, stdErr)
+    dlog("reader exited code=%s stderr=%s", tostring(exitCode), (stdErr or ""):sub(1, 400))
     readerTask = nil
   end, { arg })
-  readerTask:start()
+  -- Queue stdin BEFORE start, and do NOT call closeInput(): hs.task closes
+  -- the pipe immediately on closeInput, discarding queued input that hasn't
+  -- been written yet. Non-streaming tasks auto-close stdin once the queued
+  -- write completes.
   readerTask:setInput(text)
-  readerTask:closeInput()
+  if not readerTask:start() then
+    dlog("reader failed to start (cli=%s)", tostring(CLI))
+    readerTask = nil
+    alert("readaloud: failed to start reader")
+    return
+  end
+  dlog("reader started mode=%s chars=%d", mode, #text)
   alert(mode == "window" and "▶ reading window…" or "▶ reading…")
 end
 
@@ -143,25 +167,31 @@ local function captureSelection()
 
   restore()
 
-  if (not text or #text == 0) then
+  local viaClipboard = (text ~= nil and #text > 0)
+  if not viaClipboard then
     -- AX fallback: focused element's AXSelectedText.
-    local el = hs.uielement.focusedElement and hs.uielement.focusedElement()
-    if not el then
-      local app = hs.application.frontmostApplication()
-      if app then
-        local axapp = hs.axuielement.applicationElement(app)
-        if axapp then
-          local focused = axapp:attributeValue("AXFocusedUIElement")
-          if focused then
-            text = focused:attributeValue("AXSelectedText")
-          end
+    local app = hs.application.frontmostApplication()
+    if app then
+      local axapp = hs.axuielement.applicationElement(app)
+      if axapp then
+        local focused = axapp:attributeValue("AXFocusedUIElement")
+        if focused then
+          text = focused:attributeValue("AXSelectedText")
         end
       end
     end
   end
 
+  local front = hs.application.frontmostApplication()
+  dlog(
+    "capture: app=%s clipboard=%s ax_fallback=%s len=%d",
+    front and front:name() or "?",
+    tostring(viaClipboard),
+    tostring(not viaClipboard and text ~= nil and #text > 0),
+    text and #text or 0
+  )
   if not ok then
-    hs.printf("readaloud: capture error: %s", tostring(err))
+    dlog("capture error: %s", tostring(err))
   end
   return text
 end
@@ -247,8 +277,30 @@ end
 -- ---------------------------------------------------------------------------
 -- Setup.
 -- ---------------------------------------------------------------------------
+-- Debug helpers, callable from a shell once hs.ipc is installed:
+--   hs -c "require('readaloud').testSpeak()"
+--   hs -c "print(require('readaloud').diag())"
+function M.testSpeak(text)
+  startReader(text or "Hammerspoon test. If you hear this, the task path works.", "selection")
+end
+
+function M.diag()
+  return string.format(
+    "cli=%s running=%s accessibility=%s",
+    tostring(CLI), tostring(isRunning()), tostring(hs.accessibilityState())
+  )
+end
+
 function M.start()
   config = loadConfig() or {}
+
+  -- Expose the `hs` command-line tool for interactive debugging.
+  pcall(function()
+    require("hs.ipc")
+    if not hs.ipc.cliStatus("/opt/homebrew") then
+      hs.ipc.cliInstall("/opt/homebrew")
+    end
+  end)
 
   if not hs.accessibilityState() then
     hs.alert.show("readaloud: grant Hammerspoon Accessibility permission", 4)
