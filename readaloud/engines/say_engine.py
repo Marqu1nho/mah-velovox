@@ -31,23 +31,28 @@ log = logging.getLogger("readaloud.say")
 SAY_BIN = "/usr/bin/say"
 
 
-def _say_args(voice: str, wpm: int) -> list[str]:
+def _say_args(voice: str, wpm: int | None) -> list[str]:
     args = [SAY_BIN]
     if voice and voice != "system":
         args += ["-v", voice]
-    args += ["-r", str(wpm)]
+    if wpm is not None:
+        args += ["-r", str(wpm)]
     return args
 
 
-def build_chunk_command(chunk: Chunk, cfg: dict[str, Any]) -> list[str]:
-    """Construct the argv for a single chunk (excluding the text on stdin).
+def build_chunk_command(
+    chunk: Chunk, cfg: dict[str, Any], rate_works: bool = True
+) -> list[str]:
+    """Construct the argv for a single chunk (the text goes on stdin, NOT argv).
 
-    Pure/testable: encodes the no-`-v`-for-system rule and the rate math.
+    Pure/testable: encodes the no-`-v`-for-system rule and the rate math. When
+    the rate-sanity probe found that this voice ignores `-r`, the `-r` flag is
+    omitted entirely (proceed at base rate) rather than passed uselessly.
     """
     voice_cfg = cfg.get("voice", {})
     say_voice = voice_cfg.get("say_voice", "system")
     base_wpm = int(voice_cfg.get("base_wpm", 190))
-    wpm = max(1, round(base_wpm * chunk.rate_factor))
+    wpm = max(1, round(base_wpm * chunk.rate_factor)) if rate_works else None
     return _say_args(say_voice, wpm)
 
 
@@ -58,21 +63,22 @@ def _sanity_cache_path() -> str:
     return os.path.join(base, "readaloud", "say_rate_ok")
 
 
-def _rate_sanity_check(cfg: dict[str, Any]) -> None:
-    """Sanity-check that `-r` audibly changes rate; log a warning if not.
+def _rate_sanity_check(cfg: dict[str, Any]) -> bool:
+    """Sanity-check that `-r` audibly changes rate; return whether it works.
 
     We cannot truly measure audibility headlessly, so we verify the say
     binary exists and accepts `-r` by synthesizing two short clips to file
     at very different rates and comparing durations. Best-effort; never
-    fails the run (spec §3.4).
+    fails the run (spec §3.4). The returned bool is plumbed into
+    build_chunk_command so a voice that ignores `-r` proceeds at base rate.
 
     Because each read is a short-lived process, the (~2s) check is run at most
-    once per machine+voice and the result is cached so it never adds latency
-    to subsequent reads.
+    once per machine+voice and a positive result is cached so it never adds
+    latency to subsequent reads.
     """
     if not os.path.exists(SAY_BIN):
         log.warning("say binary not found at %s; say engine unavailable", SAY_BIN)
-        return
+        return True
 
     voice_cfg = cfg.get("voice", {})
     say_voice = voice_cfg.get("say_voice", "system")
@@ -83,15 +89,16 @@ def _rate_sanity_check(cfg: dict[str, Any]) -> None:
         if os.path.exists(cache):
             with open(cache, encoding="utf-8") as fh:
                 if say_voice in fh.read().splitlines():
-                    return
+                    return True
     except OSError:
         pass
 
-    _run_rate_check_and_cache(cfg, say_voice, cache)
+    return _run_rate_check_and_cache(cfg, say_voice, cache)
 
 
-def _run_rate_check_and_cache(cfg: dict[str, Any], say_voice: str, cache: str) -> None:
+def _run_rate_check_and_cache(cfg: dict[str, Any], say_voice: str, cache: str) -> bool:
     ok = True
+    measured = False  # did we get two valid (non-zero) durations?
     try:
         import tempfile
         import wave
@@ -118,6 +125,7 @@ def _run_rate_check_and_cache(cfg: dict[str, Any], say_voice: str, cache: str) -
                 except OSError:
                     pass
         if len(durations) == 2 and durations[0] > 0 and durations[1] > 0:
+            measured = True
             # Faster rate (320) should be meaningfully shorter than slow (120).
             if durations[1] >= durations[0] * 0.85:
                 ok = False
@@ -130,11 +138,12 @@ def _run_rate_check_and_cache(cfg: dict[str, Any], say_voice: str, cache: str) -
                 )
     except Exception as exc:  # never fail the run
         log.debug("rate sanity check skipped: %s", exc)
-        return
+        return True
 
-    # Cache success so future reads skip the ~2s probe. We only cache when the
-    # check actually ran cleanly; a failed/odd result is re-probed next time.
-    if ok:
+    # Cache only a real positive (two valid durations showing -r works). A
+    # degenerate probe (both durations 0.0) is never cached as success, so it
+    # gets re-probed next time instead of being silently locked in.
+    if ok and measured:
         try:
             os.makedirs(os.path.dirname(cache), exist_ok=True)
             existing = ""
@@ -146,6 +155,7 @@ def _run_rate_check_and_cache(cfg: dict[str, Any], say_voice: str, cache: str) -
                     fh.write(say_voice + "\n")
         except OSError:
             pass
+    return ok
 
 
 def _slnc_cache_path() -> str:
@@ -286,7 +296,7 @@ class SayEngine:
             raise RuntimeError(f"say binary not found at {SAY_BIN}")
 
     def speak(self, chunks: list[Chunk]) -> None:
-        _rate_sanity_check(self.cfg)
+        rate_works = _rate_sanity_check(self.cfg)
         if _slnc_supported(self.cfg):
             chunks = _coalesce_slnc(chunks)
         else:
@@ -300,17 +310,22 @@ class SayEngine:
                 break
             text = chunk.text.strip()
             if text:
-                self._speak_chunk(chunk)
+                self._speak_chunk(chunk, rate_works)
             if self._stopped:
                 break
             if chunk.pause_after_ms:
                 self._sleep_ms(chunk.pause_after_ms)
 
-    def _speak_chunk(self, chunk: Chunk) -> None:
-        args = build_chunk_command(chunk, self.cfg) + [chunk.text]
+    def _speak_chunk(self, chunk: Chunk, rate_works: bool = True) -> None:
+        # The chunk text goes on stdin, never argv: slnc-coalescing makes chunk
+        # text long (an entire paragraph or list as one invocation), and a
+        # chunk starting with `-` would be misparsed as a flag on argv. `say`
+        # reads stdin when given no text arguments.
+        args = build_chunk_command(chunk, self.cfg, rate_works)
         try:
             self._proc = subprocess.Popen(
                 args,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -318,7 +333,14 @@ class SayEngine:
             log.error("failed to launch say: %s", exc)
             return
         try:
-            self._proc.wait()
+            proc = self._proc
+            if proc.stdin is not None:
+                try:
+                    proc.stdin.write(chunk.text.encode("utf-8"))
+                    proc.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            proc.wait()
         finally:
             self._proc = None
 

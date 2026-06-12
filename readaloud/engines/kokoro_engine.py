@@ -91,6 +91,8 @@ class KokoroEngine:
         self.speed = float(voice_cfg.get("speed", 1.1))
         self._stop = threading.Event()
         self._kokoro = None
+        self._stream = None
+        self._stream_lock = threading.Lock()
 
     def _ensure_model(self):
         if self._kokoro is None:
@@ -122,10 +124,17 @@ class KokoroEngine:
         stream = sd.OutputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="float32"
         )
+        with self._stream_lock:
+            self._stream = stream
         stream.start()
         try:
             while not self._stop.is_set():
-                item = audio_q.get()
+                try:
+                    # Time out so a stop() while the producer is mid-synthesis
+                    # is noticed promptly instead of blocking until the next put.
+                    item = audio_q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
                 if item is _SENTINEL:
                     break
                 # Write in blocks so stop is responsive.
@@ -134,18 +143,37 @@ class KokoroEngine:
                 for start in range(0, len(wave), block):
                     if self._stop.is_set():
                         break
-                    stream.write(wave[start : start + block])
+                    try:
+                        stream.write(wave[start : start + block])
+                    except Exception:
+                        break  # stream aborted by stop()
         finally:
+            with self._stream_lock:
+                self._stream = None
             try:
                 stream.stop()
                 stream.close()
             except Exception:
                 pass
             self._stop.set()
+            # Drain the queue so a producer blocked in put() after stop can't
+            # wedge forever before the join.
+            try:
+                while True:
+                    audio_q.get_nowait()
+            except queue.Empty:
+                pass
             prod.join(timeout=1.0)
 
     def stop(self) -> None:
         self._stop.set()
+        with self._stream_lock:
+            stream = self._stream
+        if stream is not None:
+            try:
+                stream.abort()  # immediate: drop in-flight audio, don't drain
+            except Exception:
+                pass
 
     def synth_to_wav(self, chunks: list[Chunk], out_path: str) -> int:
         """Synthesize all chunks to a wav file (no audio device).

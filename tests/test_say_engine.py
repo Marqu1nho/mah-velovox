@@ -49,6 +49,13 @@ def test_paragraph_rate_is_base():
     assert rate == 190
 
 
+def test_rate_omitted_when_probe_says_rate_does_not_work():
+    cfg = _cfg(**{"voice.say_voice": "system"})
+    chunk = Chunk(text="hi", kind="header", rate_factor=0.85)
+    cmd = build_chunk_command(chunk, cfg, rate_works=False)
+    assert "-r" not in cmd
+
+
 def test_coalesce_merges_sentences_without_pauses():
     chunks = [
         Chunk(text="One.", kind="paragraph"),
