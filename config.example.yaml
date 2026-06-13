@@ -50,14 +50,21 @@ limits:
 #   re:<regex>        -> Python regex, excised (per line; ^ $ anchor to a line)
 #   drop-line:<str>   -> if the line contains <str>, drop the whole line
 #   drop-line:re:<rx> -> drop the whole line if the regex matches it
+# `blocks` drop a whole multi-line group: a start match removes that line and
+# every following line UNTIL the next blank line (the blank is preserved). Use
+# it for marker-less continuation/body lines a per-line rule can't catch.
+#   plain string / re:<rx>  -> matches a group's START line (no drop-line: here)
 # App names are the frontmost app at capture time (see the `app=` field in
 # ~/.local/state/readaloud/hammerspoon.log).
 mute:
   global: []
   by_app: {}
+  blocks: []
   # Example -- uncomment / adapt to taste:
   # global:
   #   - "drop-line:↓ to manage · ctrl+o to expand"
+  # blocks:                  # drop a whole group: start match -> until next blank line
+  #   - "re:^⏺ \\w+\\("       # a Claude Code tool call + its ⎿ result body
   # by_app:
   #   Code:
   #     - "drop-line:re:^\\s*[⏺⎿]"        # Claude Code tool-call / result lines

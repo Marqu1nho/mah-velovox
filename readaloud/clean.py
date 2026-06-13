@@ -246,6 +246,77 @@ def _parse_mute_rules(rules: list[str]) -> list[tuple]:
     return parsed
 
 
+def _parse_block_rules(rules: list[str]) -> list:
+    """Parse block start-pattern strings into matchers.
+
+    A block rule has no ``drop-line:`` prefix (blocks are inherently drop).
+    Each matcher is either a literal string or a compiled regex object,
+    following the same ``re:`` grammar as per-line mute rules. Invalid
+    regexes are logged and skipped.
+    """
+    parsed: list = []
+    for rule in rules:
+        if rule.startswith("re:"):
+            pattern = rule[3:]
+            try:
+                parsed.append(re.compile(pattern))
+            except re.error as exc:
+                log.warning(
+                    "mute block rule %r has invalid regex %r: %s; skipping",
+                    rule,
+                    pattern,
+                    exc,
+                )
+                continue
+        else:
+            parsed.append(rule)
+    return parsed
+
+
+def _block_matches(line: str, matchers: list) -> bool:
+    for m in matchers:
+        if isinstance(m, str):
+            if m in line:
+                return True
+        elif m.search(line):
+            return True
+    return False
+
+
+def apply_block_mute(text: str, block_rules: list[str]) -> str:
+    """Drop whole multi-line groups whose first line matches a block rule.
+
+    Scanning top to bottom, when a line matches any block start-pattern,
+    that line and every following line are dropped UNTIL (but not including)
+    the next blank/whitespace-only line. The blank line is preserved as a
+    separator, then normal scanning resumes. This catches marker-less
+    continuation/body lines (e.g. a Claude Code tool call header plus its
+    wrapped command and ``⎿`` result body) that per-line rules can't match.
+    """
+    if not block_rules:
+        return text
+    matchers = _parse_block_rules(block_rules)
+    if not matchers:
+        return text
+
+    lines = text.split("\n")
+    out_lines: list[str] = []
+    dropping = False
+    for line in lines:
+        if dropping:
+            if line.strip() == "":
+                # Blank line ends the group; preserve it and resume scanning.
+                dropping = False
+                out_lines.append(line)
+            # else: still inside the group — drop the line.
+            continue
+        if _block_matches(line, matchers):
+            dropping = True
+            continue  # drop the matched start line too
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
 def apply_mute(text: str, rules: list[str]) -> str:
     """Apply mute rules to text, per line.
 
@@ -302,6 +373,14 @@ def clean(text: str, cfg: dict[str, Any], app: str | None = None) -> str:
 
     # Apply mute rules before any other line-based processing.
     mute_cfg = cfg.get("mute", {})
+
+    # Block-mute first: drop whole multi-line groups (start match -> next
+    # blank line) so marker-less continuation/body lines vanish before the
+    # per-line rules run on the survivors.
+    block_rules: list[str] = list(mute_cfg.get("blocks", []))
+    if block_rules:
+        text = apply_block_mute(text, block_rules)
+
     mute_rules: list[str] = list(mute_cfg.get("global", []))
     if app:
         mute_rules.extend(mute_cfg.get("by_app", {}).get(app, []))

@@ -54,6 +54,7 @@ DEFAULTS: dict[str, Any] = {
     "mute": {
         "global": [],
         "by_app": {},
+        "blocks": [],
     },
     "window_read": {
         "max_chars": 20000,
@@ -157,6 +158,9 @@ def _validate(cfg: dict[str, Any]) -> None:
     global_rules = mute.get("global", [])
     if not isinstance(global_rules, list) or not all(isinstance(r, str) for r in global_rules):
         raise ConfigError("'mute.global' must be a list of strings.")
+    block_rules = mute.get("blocks", [])
+    if not isinstance(block_rules, list) or not all(isinstance(r, str) for r in block_rules):
+        raise ConfigError("'mute.blocks' must be a list of strings.")
     by_app = mute.get("by_app", {})
     if not isinstance(by_app, dict):
         raise ConfigError("'mute.by_app' must be a mapping.")
