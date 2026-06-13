@@ -51,6 +51,10 @@ DEFAULTS: dict[str, Any] = {
         "paths": "basename",
         "emoji": "skip",
     },
+    "mute": {
+        "global": [],
+        "by_app": {},
+    },
     "window_read": {
         "max_chars": 20000,
     },
@@ -144,6 +148,22 @@ def _validate(cfg: dict[str, Any]) -> None:
             raise ConfigError(
                 f"Invalid value for '{dotted}': {value!r}. "
                 f"Expected a non-negative number."
+            )
+
+    # Mute rule validation.
+    mute = cfg.get("mute", {})
+    if not isinstance(mute, dict):
+        raise ConfigError("'mute' must be a mapping.")
+    global_rules = mute.get("global", [])
+    if not isinstance(global_rules, list) or not all(isinstance(r, str) for r in global_rules):
+        raise ConfigError("'mute.global' must be a list of strings.")
+    by_app = mute.get("by_app", {})
+    if not isinstance(by_app, dict):
+        raise ConfigError("'mute.by_app' must be a mapping.")
+    for app_name, app_rules in by_app.items():
+        if not isinstance(app_rules, list) or not all(isinstance(r, str) for r in app_rules):
+            raise ConfigError(
+                f"'mute.by_app.{app_name}' must be a list of strings."
             )
 
 

@@ -43,3 +43,24 @@ window_read:
 
 limits:
   max_selection_chars: 60000   # guard against accidental ⌘A reads
+
+# mute: per-app ignore lists for captured text. Rules are case-sensitive and
+# apply to both selection and window reads.
+#   plain string      -> excised wherever it appears in a line
+#   re:<regex>        -> Python regex, excised (per line; ^ $ anchor to a line)
+#   drop-line:<str>   -> if the line contains <str>, drop the whole line
+#   drop-line:re:<rx> -> drop the whole line if the regex matches it
+# App names are the frontmost app at capture time (see the `app=` field in
+# ~/.local/state/readaloud/hammerspoon.log).
+mute:
+  global: []
+  by_app: {}
+  # Example -- uncomment / adapt to taste:
+  # global:
+  #   - "drop-line:↓ to manage · ctrl+o to expand"
+  # by_app:
+  #   Code:
+  #     - "drop-line:re:^\\s*[⏺⎿]"        # Claude Code tool-call / result lines
+  #     - "drop-line:↓ to manage · ctrl+o to expand"
+  #   Arc:
+  #     - "Skip to content"

@@ -135,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run clean+parse+script on stdin and print chunks as JSON",
     )
     parser.add_argument("--version", action="version", version=f"readaloud {__version__}")
+    parser.add_argument("--app", metavar="NAME", help="frontmost app name, for per-app mute rules")
     args = parser.parse_args(argv)
 
     try:
@@ -151,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     raw = _read_stdin()
 
     if args.print_script:
-        cleaned = clean(raw, cfg)
+        cleaned = clean(raw, cfg, app=args.app)
         chunks = build_script(parse(cleaned, cfg), cfg)
         json.dump([c.to_dict() for c in chunks], sys.stdout, indent=2)
         sys.stdout.write("\n")
@@ -165,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raw = _truncate(raw, cfg)
 
-    cleaned = clean(raw, cfg)
+    cleaned = clean(raw, cfg, app=args.app)
     chunks = build_script(parse(cleaned, cfg), cfg)
     if not chunks:
         return 0

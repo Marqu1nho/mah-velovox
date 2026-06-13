@@ -7,9 +7,12 @@ lines). Output is clean prose ready for markdown parsing.
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from typing import Any
+
+log = logging.getLogger("readaloud.clean")
 
 # --- ANSI / VT escape sequences -------------------------------------------
 
@@ -217,7 +220,72 @@ def _rejoin_block(lines: list[str], mode: str) -> list[str]:
     return out
 
 
-def clean(text: str, cfg: dict[str, Any]) -> str:
+def _parse_mute_rules(rules: list[str]) -> list[tuple]:
+    """Parse raw rule strings into (drop_line: bool, kind: str, payload) tuples.
+
+    kind is 'literal' or a compiled regex object.
+    Invalid regexes are logged and skipped.
+    """
+    parsed = []
+    for rule in rules:
+        drop_line = False
+        s = rule
+        if s.startswith("drop-line:"):
+            drop_line = True
+            s = s[len("drop-line:"):]
+        if s.startswith("re:"):
+            pattern = s[3:]
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                log.warning("mute rule %r has invalid regex %r: %s; skipping", rule, pattern, exc)
+                continue
+            parsed.append((drop_line, compiled))
+        else:
+            parsed.append((drop_line, s))
+    return parsed
+
+
+def apply_mute(text: str, rules: list[str]) -> str:
+    """Apply mute rules to text, per line.
+
+    Each rule is one of:
+      - plain string  -> excise wherever it appears in a line
+      - re:<pattern>  -> excise regex match from the line
+      - drop-line:<s> -> if the line contains <s>, replace line with ""
+      - drop-line:re:<pattern> -> if regex matches line, replace line with ""
+    """
+    if not rules:
+        return text
+    parsed = _parse_mute_rules(rules)
+    if not parsed:
+        return text
+
+    lines = text.split("\n")
+    out_lines = []
+    for line in lines:
+        for drop_line, payload in parsed:
+            if isinstance(payload, str):
+                # literal
+                if drop_line:
+                    if payload in line:
+                        line = ""
+                        break
+                else:
+                    line = line.replace(payload, "")
+            else:
+                # compiled regex
+                if drop_line:
+                    if payload.search(line):
+                        line = ""
+                        break
+                else:
+                    line = payload.sub("", line)
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def clean(text: str, cfg: dict[str, Any], app: str | None = None) -> str:
     """Full cleaning pipeline. Returns cleaned text with blank-line block
     structure preserved (so the parser can still see paragraph boundaries).
     """
@@ -231,6 +299,14 @@ def clean(text: str, cfg: dict[str, Any]) -> str:
     # Normalize CRLF / lone CR to LF so the line-based passes below never see
     # stray carriage returns mid-pipeline (strip_ansi's C0 class skips \x0d).
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Apply mute rules before any other line-based processing.
+    mute_cfg = cfg.get("mute", {})
+    mute_rules: list[str] = list(mute_cfg.get("global", []))
+    if app:
+        mute_rules.extend(mute_cfg.get("by_app", {}).get(app, []))
+    if mute_rules:
+        text = apply_mute(text, mute_rules)
 
     raw_lines = text.split("\n")
 

@@ -183,10 +183,16 @@ local function startReader(text, mode)
     return
   end
   local arg = (mode == "window") and "--window" or "--stdin"
+  local args = { arg }
+  local frontApp = hs.application.frontmostApplication()
+  if frontApp and frontApp:name() then
+    table.insert(args, "--app")
+    table.insert(args, frontApp:name())
+  end
   readerTask = hs.task.new(CLI, function(exitCode, stdOut, stdErr)
     dlog("reader exited code=%s stderr=%s", tostring(exitCode), (stdErr or ""):sub(1, 400))
     readerTask = nil
-  end, { arg })
+  end, args)
   -- Queue stdin BEFORE start, and do NOT call closeInput(): hs.task closes
   -- the pipe immediately on closeInput, discarding queued input that hasn't
   -- been written yet. Non-streaming tasks auto-close stdin once the queued
@@ -198,7 +204,7 @@ local function startReader(text, mode)
     alert("readaloud: failed to start reader")
     return
   end
-  dlog("reader started mode=%s chars=%d", mode, #text)
+  dlog("reader started mode=%s app=%s chars=%d", mode, (frontApp and frontApp:name()) or "?", #text)
   alert(mode == "window" and "▶ reading window…" or "▶ reading…")
 end
 
