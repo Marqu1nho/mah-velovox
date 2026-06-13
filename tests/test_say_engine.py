@@ -1,9 +1,21 @@
 """Tests for say engine command construction (no audio playback)."""
 
 import copy
+import os
+import tempfile
+import threading
+import time
+
+import pytest
 
 from readaloud.config import DEFAULTS
-from readaloud.engines.say_engine import _coalesce, _coalesce_slnc, build_chunk_command
+from readaloud.engines.say_engine import (
+    SAY_BIN,
+    SayEngine,
+    _coalesce,
+    _coalesce_slnc,
+    build_chunk_command,
+)
 from readaloud.script import Chunk
 
 
@@ -132,3 +144,76 @@ def test_slnc_splits_on_rate_change_but_absorbs_hr():
     # The header boundary keeps its python-sleep pauses.
     assert out[0].pause_after_ms == 400
     assert chunks[1].text == "Body."  # input not mutated
+
+
+# ---------------------------------------------------------------------------
+# Pause/resume (no audio: rendering to a temp -o file)
+# ---------------------------------------------------------------------------
+
+
+def test_toggle_pause_flips_state():
+    if not os.path.exists(SAY_BIN):
+        pytest.skip("say binary not present")
+    eng = SayEngine(_cfg())
+    assert eng._paused is False
+    eng.toggle_pause()
+    assert eng._paused is True
+    eng.toggle_pause()
+    assert eng._paused is False
+
+
+def test_toggle_pause_noop_after_stop():
+    if not os.path.exists(SAY_BIN):
+        pytest.skip("say binary not present")
+    eng = SayEngine(_cfg())
+    eng.stop()
+    eng.toggle_pause()
+    assert eng._paused is False  # stop() locks pause out
+
+
+def test_stop_after_pause_terminates_child():
+    """A SIGSTOPped say child must still be killed by stop() (SIGCONT first)."""
+    if not os.path.exists(SAY_BIN):
+        pytest.skip("say binary not present")
+
+    fd, out_path = tempfile.mkstemp(suffix=".aiff")
+    os.close(fd)
+    eng = SayEngine(_cfg(**{"voice.say_voice": "system"}))
+
+    # Render a long utterance to a file (no speakers). Patch the argv builder
+    # so the chunk renders to our temp path instead of the audio device.
+    long_text = ("readaloud pause stop test. " * 200).strip()
+    orig_build = build_chunk_command
+
+    def patched(chunk, cfg, rate_works=True):
+        return orig_build(chunk, cfg, rate_works) + ["-o", out_path]
+
+    import readaloud.engines.say_engine as say_mod
+
+    say_mod.build_chunk_command = patched
+    try:
+        chunk = Chunk(text=long_text, kind="paragraph")
+        worker = threading.Thread(target=eng._speak_chunk, args=(chunk, True))
+        worker.start()
+
+        # Wait for the child to be live.
+        deadline = time.monotonic() + 5.0
+        while eng._proc is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        proc = eng._proc
+        assert proc is not None, "say child never launched"
+
+        eng.toggle_pause()  # SIGSTOP the child
+        assert eng._paused is True
+        time.sleep(0.1)
+
+        eng.stop()  # must SIGCONT then SIGTERM
+        worker.join(timeout=5.0)
+        assert not worker.is_alive(), "worker did not finish after stop()"
+        assert proc.poll() is not None, "child still running after stop()"
+    finally:
+        say_mod.build_chunk_command = orig_build
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass

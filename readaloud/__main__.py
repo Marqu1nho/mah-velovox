@@ -189,9 +189,16 @@ def main(argv: list[str] | None = None) -> int:
     def _handle_stop(signum, frame):  # noqa: ARG001
         engine.stop()
 
+    def _handle_pause(signum, frame):  # noqa: ARG001
+        engine.toggle_pause()
+
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGHUP, _handle_stop)
+    # SIGUSR1 toggles pause/resume. Its default disposition is to KILL the
+    # process, so register the handler immediately after the engine exists,
+    # before Hammerspoon can send the first toggle.
+    signal.signal(signal.SIGUSR1, _handle_pause)
 
     try:
         engine.speak(chunks)

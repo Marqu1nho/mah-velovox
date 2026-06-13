@@ -2,9 +2,11 @@
 
 engine: say                 # say | kokoro
 
+# Control model: the toggle hotkey = start / pause / resume (it never stops).
+# Click the top-center transport pill to STOP a read.
 hotkeys:
-  toggle: ["ctrl", "alt", "cmd", "S"]   # read selection / stop (map your mouse button to this)
-  read_window: ["ctrl", "alt", "cmd", "W"]
+  toggle: ["ctrl", "alt", "cmd", "S"]   # start / pause / resume (map your mouse button to this)
+  read_window: ["ctrl", "alt", "cmd", "W"]   # same start / pause / resume, for window reads
   show_alerts: true
 
 voice:

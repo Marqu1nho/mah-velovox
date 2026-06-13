@@ -90,6 +90,12 @@ class KokoroEngine:
         self.voice = voice_cfg.get("kokoro_voice", "af_heart")
         self.speed = float(voice_cfg.get("speed", 1.1))
         self._stop = threading.Event()
+        # _resume is SET when playing, CLEAR when paused. The consumer waits
+        # on it between frame blocks; stop() sets it so a paused consumer
+        # unblocks and exits cleanly.
+        self._resume = threading.Event()
+        self._resume.set()
+        self._paused = False
         self._kokoro = None
         self._stream = None
         self._stream_lock = threading.Lock()
@@ -102,6 +108,8 @@ class KokoroEngine:
     def speak(self, chunks: list[Chunk]) -> None:
         import sounddevice as sd
 
+        self._paused = False
+        self._resume.set()
         kokoro = self._ensure_model()
         audio_q: queue.Queue = queue.Queue(maxsize=4)
 
@@ -143,6 +151,12 @@ class KokoroEngine:
                 for start in range(0, len(wave), block):
                     if self._stop.is_set():
                         break
+                    # Block here while paused; stop() sets _resume to release.
+                    while not self._resume.wait(timeout=0.2):
+                        if self._stop.is_set():
+                            break
+                    if self._stop.is_set():
+                        break
                     try:
                         stream.write(wave[start : start + block])
                     except Exception:
@@ -165,8 +179,40 @@ class KokoroEngine:
                 pass
             prod.join(timeout=1.0)
 
+    def toggle_pause(self) -> None:
+        """Best-effort pause/resume of playback (the audio stream).
+
+        On pause we stop the stream (halts playback, keeps it open) and clear
+        the resume event so the consumer blocks between frame blocks. On
+        resume we restart the stream and set the event. The producer keeps
+        filling the bounded queue regardless.
+        """
+        if self._stop.is_set():
+            return
+        self._paused = not self._paused
+        with self._stream_lock:
+            stream = self._stream
+        if self._paused:
+            self._resume.clear()
+            if stream is not None:
+                try:
+                    stream.stop()  # halt playback, keep stream open
+                except Exception:
+                    pass
+        else:
+            if stream is not None:
+                try:
+                    stream.start()
+                except Exception:
+                    pass
+            self._resume.set()
+
     def stop(self) -> None:
         self._stop.set()
+        # Release a paused consumer so it can observe _stop and exit; clear
+        # the pause flag so a subsequent speak() starts clean.
+        self._paused = False
+        self._resume.set()
         with self._stream_lock:
             stream = self._stream
         if stream is not None:

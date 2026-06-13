@@ -132,6 +132,71 @@ local function alert(msg)
   end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Transport pill: a persistent, CLICKABLE status canvas. Unlike alert() it
+-- does NOT auto-dismiss — it stays until the read stops or finishes. Clicking
+-- it stops the read. Same visual style/position as the transient pill.
+-- (forward declaration; stopReader is defined later in the file.)
+-- ---------------------------------------------------------------------------
+local transportCanvas = nil
+local paused = false
+local onTransportClick = nil  -- set after stopReader is defined
+
+local function hideTransport()
+  if transportCanvas then
+    transportCanvas:delete(0.2)
+    transportCanvas = nil
+  end
+end
+
+local function showTransport(stateText)
+  -- Rebuild from scratch each call so the text resizes cleanly.
+  if transportCanvas then transportCanvas:delete(); transportCanvas = nil end
+
+  local screen = hs.screen.mainScreen():frame()
+  local yPct = tonumber(cfgGet("alerts.y_pct", 3.5)) or 3.5
+
+  local label = stateText .. "   ● stop"
+  local styled = hs.styledtext.new(label, {
+    font = { name = ".AppleSystemUIFont", size = 16 },
+    color = { white = 1.0, alpha = 1.0 },
+  })
+  local c = hs.canvas.new({ x = 0, y = 0, w = 10, h = 10 })
+  local size = c:minimumTextSize(styled)
+  local padX, padY = 18, 8
+  local w, h = size.w + padX * 2, size.h + padY * 2
+  c:frame({
+    x = screen.x + (screen.w - w) / 2,
+    y = screen.y + (screen.h * yPct / 100) - h / 2,
+    w = w,
+    h = h,
+  })
+  c[1] = {
+    type = "rectangle",
+    action = "fill",
+    roundedRectRadii = { xRadius = h / 2, yRadius = h / 2 },
+    fillColor = { red = 0, green = 0, blue = 0, alpha = 0.72 },
+    trackMouseUp = true,
+  }
+  c[2] = {
+    type = "text",
+    text = styled,
+    frame = { x = padX, y = padY, w = size.w, h = size.h },
+    trackMouseUp = true,
+  }
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behaviorAsLabels({ "canJoinAllSpaces", "transient" })
+  -- Enable callbacks for canvas regions not covered by a tracking element too.
+  c:canvasMouseEvents(true, true)
+  c:mouseCallback(function(_canvas, msg)
+    if msg == "mouseUp" and onTransportClick then
+      onTransportClick()
+    end
+  end)
+  c:show()
+  transportCanvas = c
+end
+
 local function isRunning()
   return readerTask ~= nil and readerTask:isRunning()
 end
@@ -176,7 +241,51 @@ local function stopReader()
   end
 end
 
-local function startReader(text, mode)
+-- Clicking the transport pill stops the read. Defined here so it can see
+-- stopReader; assigned to the forward-declared upvalue used by the canvas
+-- mouseCallback.
+onTransportClick = function()
+  stopReader()
+  paused = false
+  hideTransport()
+  dlog("transport clicked -> stop")
+end
+
+-- Forward-declared so startOrTogglePause (above its definition) can call it.
+local startReader
+
+-- Start reading if idle, else toggle pause/resume on the live reader. The
+-- toggle NEVER stops — stop is reserved for clicking the transport pill.
+local function startOrTogglePause(captureFn, mode)
+  if isRunning() then
+    -- Live reader we hold a handle for: send SIGUSR1 to flip pause/resume.
+    local pid = readerTask:pid()
+    if pid and pid > 0 then
+      hs.execute(string.format("/bin/kill -USR1 %d 2>/dev/null || true", pid))
+      paused = not paused
+      showTransport(paused and "⏸ paused" or "▶ reading")
+      dlog("toggle pause -> %s (pid=%d)", paused and "paused" or "reading", pid)
+    end
+    return
+  end
+  if orphanReaderPid() then
+    -- Orphan reader (post-reload): no handle to sync pause state, so the safe
+    -- fallback is to stop it outright.
+    stopOrphanReader()
+    paused = false
+    hideTransport()
+    alert("■ stopped")
+    return
+  end
+  local text = captureFn()
+  if not text or #text == 0 then
+    alert(mode == "window" and "readaloud: no window text" or "readaloud: no selection")
+    return
+  end
+  startReader(text, mode)
+end
+
+function startReader(text, mode)
   if not CLI then return end
   if not text or #text == 0 then
     alert("readaloud: nothing to read")
@@ -192,6 +301,9 @@ local function startReader(text, mode)
   readerTask = hs.task.new(CLI, function(exitCode, stdOut, stdErr)
     dlog("reader exited code=%s stderr=%s", tostring(exitCode), (stdErr or ""):sub(1, 400))
     readerTask = nil
+    -- Natural completion or stop: dismiss the transport pill and reset state.
+    paused = false
+    hideTransport()
   end, args)
   -- Queue stdin BEFORE start, and do NOT call closeInput(): hs.task closes
   -- the pipe immediately on closeInput, discarding queued input that hasn't
@@ -205,7 +317,8 @@ local function startReader(text, mode)
     return
   end
   dlog("reader started mode=%s app=%s chars=%d", mode, (frontApp and frontApp:name()) or "?", #text)
-  alert(mode == "window" and "▶ reading window…" or "▶ reading…")
+  paused = false
+  showTransport("▶ reading")
 end
 
 -- ---------------------------------------------------------------------------
@@ -328,40 +441,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Hotkey handlers.
 -- ---------------------------------------------------------------------------
+-- Toggle hotkey: start if idle, else pause/resume. Stop is click-only.
 local function onToggle()
-  if isRunning() then
-    stopReader()
-    alert("■ stopped")
-    return
-  end
-  if stopOrphanReader() then
-    alert("■ stopped")
-    return
-  end
-  local text = captureSelection()
-  if not text or #text == 0 then
-    alert("readaloud: no selection")
-    return
-  end
-  startReader(text, "selection")
+  startOrTogglePause(captureSelection, "selection")
 end
 
 local function onReadWindow()
-  if isRunning() then
-    stopReader()
-    alert("■ stopped")
-    return
-  end
-  if stopOrphanReader() then
-    alert("■ stopped")
-    return
-  end
-  local text = captureWindow()
-  if not text or #text == 0 then
-    alert("readaloud: no window text")
-    return
-  end
-  startReader(text, "window")
+  startOrTogglePause(captureWindow, "window")
 end
 
 -- ---------------------------------------------------------------------------

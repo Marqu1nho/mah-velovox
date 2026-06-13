@@ -292,6 +292,7 @@ class SayEngine:
         self.cfg = cfg
         self._proc: subprocess.Popen | None = None
         self._stopped = False
+        self._paused = False
         if shutil.which(SAY_BIN) is None and not os.path.exists(SAY_BIN):
             raise RuntimeError(f"say binary not found at {SAY_BIN}")
 
@@ -334,6 +335,13 @@ class SayEngine:
             return
         try:
             proc = self._proc
+            # A pause issued at a chunk boundary (between processes) still
+            # takes effect: SIGSTOP the freshly-launched child immediately.
+            if self._paused and not self._stopped:
+                try:
+                    proc.send_signal(signal.SIGSTOP)
+                except ProcessLookupError:
+                    pass
             if proc.stdin is not None:
                 try:
                     proc.stdin.write(chunk.text.encode("utf-8"))
@@ -350,15 +358,44 @@ class SayEngine:
         while not self._stopped and time.monotonic() < end:
             time.sleep(min(0.05, end - time.monotonic()))
 
+    def toggle_pause(self) -> None:
+        """Flip pause state, suspending/resuming the live say child.
+
+        Pause = SIGSTOP the child; resume = SIGCONT. If toggled to paused
+        while no child is live (between chunks), the flag persists and
+        _speak_chunk SIGSTOPs the next child it launches, so a pause issued
+        at a chunk boundary still takes effect.
+        """
+        if self._stopped:
+            return
+        self._paused = not self._paused
+        proc = self._proc
+        if proc and proc.poll() is None:
+            sig = signal.SIGSTOP if self._paused else signal.SIGCONT
+            try:
+                proc.send_signal(sig)
+            except ProcessLookupError:
+                pass
+
     def stop(self) -> None:
-        """SIGTERM the current say process and abort the queue."""
+        """Resume (if paused) then SIGTERM the current say process and abort.
+
+        A SIGSTOPped process won't act on SIGTERM until continued, so we
+        SIGCONT first to guarantee a paused read can always be stopped.
+        """
         self._stopped = True
         proc = self._proc
         if proc and proc.poll() is None:
+            if self._paused:
+                try:
+                    proc.send_signal(signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
             try:
                 proc.send_signal(signal.SIGTERM)
             except ProcessLookupError:
                 pass
+        self._paused = False
 
 
 def speak(chunks: list[Chunk], cfg: dict[str, Any]) -> SayEngine:
