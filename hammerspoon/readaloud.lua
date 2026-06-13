@@ -133,14 +133,15 @@ local function alert(msg)
 end
 
 -- ---------------------------------------------------------------------------
--- Transport pill: a persistent, CLICKABLE status canvas. Unlike alert() it
--- does NOT auto-dismiss — it stays until the read stops or finishes. Clicking
--- it stops the read. Same visual style/position as the transient pill.
+-- Transport pill: a persistent, CLICKABLE two-zone canvas. Unlike alert() it
+-- does NOT auto-dismiss — it stays until the read stops or finishes.
+-- LEFT zone  = play/pause toggle (icon reflects current state).
+-- RIGHT zone = stop.
+-- Same visual style/position as the transient pill.
 -- (forward declaration; stopReader is defined later in the file.)
 -- ---------------------------------------------------------------------------
 local transportCanvas = nil
 local paused = false
-local onTransportClick = nil  -- set after stopReader is defined
 
 local function hideTransport()
   if transportCanvas then
@@ -149,48 +150,120 @@ local function hideTransport()
   end
 end
 
-local function showTransport(stateText)
-  -- Rebuild from scratch each call so the text resizes cleanly.
+-- togglePauseLive: shared function used by BOTH the hotkey path and the
+-- left-zone click.  Guards that a live readerTask exists, sends SIGUSR1,
+-- flips the module `paused` bool, and redraws the transport pill.
+-- Forward-declared here; body assigned after stopReader so it can't
+-- accidentally reference it.
+local togglePauseLive
+
+local function showTransport()
+  -- Rebuild from scratch each call so sizing stays clean.
   if transportCanvas then transportCanvas:delete(); transportCanvas = nil end
 
   local screen = hs.screen.mainScreen():frame()
   local yPct = tonumber(cfgGet("alerts.y_pct", 3.5)) or 3.5
 
-  local label = stateText .. "   ● stop"
-  local styled = hs.styledtext.new(label, {
-    font = { name = ".AppleSystemUIFont", size = 16 },
-    color = { white = 1.0, alpha = 1.0 },
-  })
-  local c = hs.canvas.new({ x = 0, y = 0, w = 10, h = 10 })
-  local size = c:minimumTextSize(styled)
+  -- Left icon: show the action that a click will *perform* (opposite of state).
+  local leftIcon  = paused and "▶" or "⏸"
+  local rightIcon = "⏹"
+  local sepW = 1  -- thin separator width in points
+
+  local font = { name = ".AppleSystemUIFont", size = 16 }
+  local white = { white = 1.0, alpha = 1.0 }
+
+  -- Measure each zone's text independently using a scratch canvas.
+  local scratch = hs.canvas.new({ x = 0, y = 0, w = 10, h = 10 })
+  local styledLeft  = hs.styledtext.new(leftIcon,  { font = font, color = white })
+  local styledRight = hs.styledtext.new(rightIcon, { font = font, color = white })
+  local szLeft  = scratch:minimumTextSize(styledLeft)
+  local szRight = scratch:minimumTextSize(styledRight)
+  scratch:delete()
+
   local padX, padY = 18, 8
-  local w, h = size.w + padX * 2, size.h + padY * 2
-  c:frame({
-    x = screen.x + (screen.w - w) / 2,
-    y = screen.y + (screen.h * yPct / 100) - h / 2,
-    w = w,
-    h = h,
+  local zoneH = math.max(szLeft.h, szRight.h) + padY * 2
+  local leftW  = szLeft.w  + padX * 2
+  local rightW = szRight.w + padX * 2
+  local totalW = leftW + sepW + rightW
+
+  local c = hs.canvas.new({
+    x = screen.x + (screen.w - totalW) / 2,
+    y = screen.y + (screen.h * yPct / 100) - zoneH / 2,
+    w = totalW,
+    h = zoneH,
   })
+
+  -- Background pill (no click tracking — just visual).
   c[1] = {
     type = "rectangle",
     action = "fill",
-    roundedRectRadii = { xRadius = h / 2, yRadius = h / 2 },
+    roundedRectRadii = { xRadius = zoneH / 2, yRadius = zoneH / 2 },
     fillColor = { red = 0, green = 0, blue = 0, alpha = 0.72 },
-    trackMouseUp = true,
   }
+
+  -- LEFT zone: play/pause.  Full-height rectangle that catches clicks.
   c[2] = {
-    type = "text",
-    text = styled,
-    frame = { x = padX, y = padY, w = size.w, h = size.h },
+    id = "playpause",
+    type = "rectangle",
+    action = "fill",
+    frame = { x = 0, y = 0, w = leftW, h = zoneH },
+    fillColor = { red = 0, green = 0, blue = 0, alpha = 0.0 },  -- transparent
     trackMouseUp = true,
   }
+
+  -- Left icon text.
+  c[3] = {
+    type = "text",
+    text = styledLeft,
+    frame = {
+      x = (leftW - szLeft.w) / 2,
+      y = (zoneH - szLeft.h) / 2,
+      w = szLeft.w,
+      h = szLeft.h,
+    },
+  }
+
+  -- Separator.
+  c[4] = {
+    type = "rectangle",
+    action = "fill",
+    frame = { x = leftW, y = padY, w = sepW, h = zoneH - padY * 2 },
+    fillColor = { white = 1.0, alpha = 0.35 },
+  }
+
+  -- RIGHT zone: stop.  Full-height rectangle that catches clicks.
+  c[5] = {
+    id = "stop",
+    type = "rectangle",
+    action = "fill",
+    frame = { x = leftW + sepW, y = 0, w = rightW, h = zoneH },
+    fillColor = { red = 0, green = 0, blue = 0, alpha = 0.0 },  -- transparent
+    trackMouseUp = true,
+  }
+
+  -- Right icon text.
+  c[6] = {
+    type = "text",
+    text = styledRight,
+    frame = {
+      x = leftW + sepW + (rightW - szRight.w) / 2,
+      y = (zoneH - szRight.h) / 2,
+      w = szRight.w,
+      h = szRight.h,
+    },
+  }
+
   c:level(hs.canvas.windowLevels.overlay)
   c:behaviorAsLabels({ "canJoinAllSpaces", "transient" })
-  -- Enable callbacks for canvas regions not covered by a tracking element too.
-  c:canvasMouseEvents(true, true)
-  c:mouseCallback(function(_canvas, msg)
-    if msg == "mouseUp" and onTransportClick then
-      onTransportClick()
+  c:mouseCallback(function(_canvas, msg, elementId)
+    if msg ~= "mouseUp" then return end
+    if elementId == "playpause" then
+      togglePauseLive()
+    elseif elementId == "stop" then
+      stopReader()
+      paused = false
+      hideTransport()
+      dlog("transport stop clicked")
     end
   end)
   c:show()
@@ -241,31 +314,26 @@ local function stopReader()
   end
 end
 
--- Clicking the transport pill stops the read. Defined here so it can see
--- stopReader; assigned to the forward-declared upvalue used by the canvas
--- mouseCallback.
-onTransportClick = function()
-  stopReader()
-  paused = false
-  hideTransport()
-  dlog("transport clicked -> stop")
+-- togglePauseLive: body assigned here, after stopReader is visible.
+-- Called by BOTH the hotkey path AND the left-zone transport click.
+togglePauseLive = function()
+  if not isRunning() then return end
+  local pid = readerTask:pid()
+  if not pid or pid <= 0 then return end
+  hs.execute(string.format("/bin/kill -USR1 %d 2>/dev/null || true", pid))
+  paused = not paused
+  showTransport()
+  dlog("toggle pause -> %s (pid=%d)", paused and "paused" or "reading", pid)
 end
 
 -- Forward-declared so startOrTogglePause (above its definition) can call it.
 local startReader
 
 -- Start reading if idle, else toggle pause/resume on the live reader. The
--- toggle NEVER stops — stop is reserved for clicking the transport pill.
+-- toggle NEVER stops — stop is reserved for clicking the transport right zone.
 local function startOrTogglePause(captureFn, mode)
   if isRunning() then
-    -- Live reader we hold a handle for: send SIGUSR1 to flip pause/resume.
-    local pid = readerTask:pid()
-    if pid and pid > 0 then
-      hs.execute(string.format("/bin/kill -USR1 %d 2>/dev/null || true", pid))
-      paused = not paused
-      showTransport(paused and "⏸ paused" or "▶ reading")
-      dlog("toggle pause -> %s (pid=%d)", paused and "paused" or "reading", pid)
-    end
+    togglePauseLive()
     return
   end
   if orphanReaderPid() then
@@ -318,7 +386,7 @@ function startReader(text, mode)
   end
   dlog("reader started mode=%s app=%s chars=%d", mode, (frontApp and frontApp:name()) or "?", #text)
   paused = false
-  showTransport("▶ reading")
+  showTransport()
 end
 
 -- ---------------------------------------------------------------------------
