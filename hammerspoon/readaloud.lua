@@ -156,6 +156,9 @@ end
 -- Forward-declared here; body assigned after stopReader so it can't
 -- accidentally reference it.
 local togglePauseLive
+-- stopReader is defined later (needs readerTask helpers), but showTransport's
+-- click callback references it — forward-declare so the closure binds the local.
+local stopReader
 
 local function showTransport()
   -- Rebuild from scratch each call so sizing stays clean.
@@ -255,11 +258,15 @@ local function showTransport()
 
   c:level(hs.canvas.windowLevels.overlay)
   c:behaviorAsLabels({ "canJoinAllSpaces", "transient" })
-  c:mouseCallback(function(_canvas, msg, elementId)
+  -- Canvas-level mouse events are required for clicks to be delivered at all;
+  -- per-element trackMouseUp on transparent fills is not reliable on its own.
+  -- Route by the click x-coordinate (canvas-relative) to the correct zone.
+  c:canvasMouseEvents(true, true)
+  c:mouseCallback(function(_canvas, msg, _id, x, _y)
     if msg ~= "mouseUp" then return end
-    if elementId == "playpause" then
+    if x ~= nil and x < leftW then
       togglePauseLive()
-    elseif elementId == "stop" then
+    else
       stopReader()
       paused = false
       hideTransport()
@@ -299,7 +306,7 @@ local function stopOrphanReader()
   return false
 end
 
-local function stopReader()
+stopReader = function()
   if readerTask then
     -- terminate() sends SIGTERM to the CLI; its signal handler stops the
     -- engine, which in turn SIGTERMs any child `say` process and aborts the
@@ -533,6 +540,14 @@ function M.diag()
     "cli=%s running=%s accessibility=%s",
     tostring(CLI), tostring(isRunning()), tostring(hs.accessibilityState())
   )
+end
+
+-- Debug: report the transport pill frame + the left/stop zone boundary so a
+-- synthesized click can target a specific zone. Returns "x y w h leftW".
+function M.transportFrame()
+  if not transportCanvas then return "none" end
+  local f = transportCanvas:frame()
+  return string.format("%d %d %d %d", f.x, f.y, f.w, f.h)
 end
 
 function M.start()
