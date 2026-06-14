@@ -220,6 +220,27 @@ def _state_dir() -> str:
     return os.path.join(base, "readaloud")
 
 
+def _sweep_stale_tmp() -> None:
+    """Delete render wavs orphaned by a prior crashed/killed run.
+
+    Normal operation deletes each wav right after reading it (and stop() cleans
+    any in-flight file), so this only matters when a render is killed hard
+    (e.g. SIGKILL) before its `finally` runs. The single-instance guard means
+    no other reader is using these, so any leftover say-*.wav is stale. Calling
+    this at the start of every read bounds accumulation to a single session.
+    """
+    import glob
+
+    try:
+        for path in glob.glob(os.path.join(_state_dir(), "say-*.wav")):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _render_chunk_to_array(
     chunk: Chunk, cfg: dict[str, Any], rate_works: bool, tmp_paths: set[str]
 ) -> np.ndarray | None:
@@ -329,6 +350,8 @@ class SayEngine:
         self._paused = False
         self._resume.set()
         self._stop.clear()
+
+        _sweep_stale_tmp()  # clear any wavs orphaned by a prior hard-killed run
 
         rate_works = _rate_sanity_check(self.cfg)
         chunks = _coalesce(chunks)
