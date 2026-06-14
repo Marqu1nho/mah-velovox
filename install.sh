@@ -10,8 +10,8 @@
 #   CLI by absolute path (never relying on PATH).
 # - Downloads kokoro model files (skip if present; skipped entirely with
 #   --no-kokoro or when engine: say and models absent — still offered).
-# - Copies README.yaml -> ~/.config/readaloud/config.yaml (never
-#   overwrites).
+# - Ensures ~/.config/readaloud/ exists (config is optional; defaults apply
+#   when absent; see README.md for all options).
 # - Symlinks the lua module into ~/.hammerspoon/ and wires init.lua idempotently.
 # - Installs Hammerspoon via brew --cask if absent (instructs if brew missing).
 # - Prints a post-install checklist.
@@ -118,16 +118,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Config file (never overwrite).
+# 4. Config directory (config is optional — defaults apply when absent).
 # ---------------------------------------------------------------------------
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/readaloud"
 CONFIG="$CONFIG_DIR/config.yaml"
 mkdir -p "$CONFIG_DIR"
 if [ -f "$CONFIG" ]; then
-  say "Config already exists at $CONFIG (not overwriting)."
+  say "Config found at $CONFIG"
 else
-  cp "$REPO/README.yaml" "$CONFIG"
-  say "Wrote default config to $CONFIG"
+  say "No config needed to start — defaults apply."
+  echo "    To customize, create $CONFIG"
+  echo "    See README.md for all options."
 fi
 
 # ---------------------------------------------------------------------------

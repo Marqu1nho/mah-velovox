@@ -1,7 +1,8 @@
 """Configuration loading, defaults, deep-merge, and validation.
 
-The defaults here mirror README.yaml (§04 of the spec) exactly.
+The defaults here are the source of truth for all config keys.
 User config from ~/.config/readaloud/config.yaml is deep-merged over these.
+See README.md for the full annotated config reference.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from typing import Any
 
 import yaml
 
-# §04 contract: ship exactly these keys with these defaults.
+# Source of truth: these keys and defaults are documented in README.md.
 DEFAULTS: dict[str, Any] = {
     "engine": "say",
     "hotkeys": {

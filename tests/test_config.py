@@ -123,7 +123,7 @@ def test_malformed_yaml_clear_error(tmp_path):
 
 
 def test_defaults_match_spec_keys():
-    # §04 contract: top-level keys present.
+    # All top-level config keys must be present in DEFAULTS (see README.md).
     for key in (
         "engine",
         "hotkeys",

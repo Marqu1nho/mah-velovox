@@ -51,8 +51,8 @@ git clone <this repo> readaloud && cd readaloud
    CLI by absolute path — never relying on `PATH`.
 4. Downloads the kokoro model files into `~/.local/share/readaloud/models/`
    (skipped with `--no-kokoro`, and skipped if already present).
-5. Copies `README.yaml` → `~/.config/readaloud/config.yaml` (never
-   overwrites an existing config).
+5. Ensures `~/.config/readaloud/` exists. No config file is written —
+   built-in defaults apply until you create one (see **Configuration** below).
 6. Installs Hammerspoon via `brew install --cask hammerspoon` if absent
    (instructs you if Homebrew is missing), symlinks `readaloud.lua` into
    `~/.hammerspoon/`, and idempotently adds `require("readaloud")` to
@@ -124,36 +124,297 @@ chunk-by-chunk in a background thread and starts playback after the first chunk
 
 ## Configuration
 
-All knobs live in `~/.config/readaloud/config.yaml`. The config is re-read on
-every invocation, so engine/voice/prosody changes take effect on the **next
-read** without reinstalling. **Hotkey changes require a Hammerspoon reload**
-(the hotkeys are bound when the Lua module loads).
+### Where the live config lives
 
-| key | default | meaning |
-| --- | --- | --- |
-| `engine` | `say` | `say` \| `kokoro` |
-| `hotkeys.toggle` | `[ctrl, alt, cmd, S]` | read selection / stop |
-| `hotkeys.read_window` | `[ctrl, alt, cmd, W]` | read focused window text |
-| `hotkeys.show_alerts` | `true` | flash start/stop alerts |
-| `voice.say_voice` | `system` | `system` (Spoken Content voice) or a named voice |
-| `voice.base_wpm` | `240` | say speaking rate (words/min) |
-| `voice.kokoro_voice` | `af_heart` | kokoro voice name |
-| `voice.speed` | `1.1` | kokoro speed (1.0 = natural) |
-| `headers.rate_factor` | `0.85` | headers read slower |
-| `headers.pause_before_ms` | `500` | pause before a header |
-| `headers.pause_after_ms` | `400` | pause after a header |
-| `headers.treat_all_caps_lines_as_headers` | `true` | ALL-CAPS lines → pseudo-headers |
-| `pauses.paragraph_ms` | `350` | pause after a paragraph |
-| `pauses.list_item_ms` | `200` | pause after a list item |
-| `pauses.horizontal_rule_ms` | `600` | pause for a horizontal rule |
-| `code_blocks.mode` | `skip` | `skip` (announce) \| `read` \| `silent-skip` |
-| `code_blocks.announce_template` | `code block, {lines} lines` | spoken when skipping |
-| `clean.rejoin` | `smart` | `smart` \| `always` \| `never` (hard-wrap repair) |
-| `clean.urls` | `domain` | `domain` \| `full` \| `skip` |
-| `clean.paths` | `basename` | `basename` \| `full` \| `skip` |
-| `clean.emoji` | `skip` | `skip` \| `name` |
-| `window_read.max_chars` | `20000` | cap for the window-read AX walk |
-| `limits.max_selection_chars` | `60000` | guard against accidental ⌘A reads |
+```
+~/.config/readaloud/config.yaml
+```
+
+or `$XDG_CONFIG_HOME/readaloud/config.yaml` if `XDG_CONFIG_HOME` is set.
+
+If the file is absent, built-in defaults apply — no config is required to
+start. Engine/voice/prosody/mute changes take effect on the **next read**
+without reinstalling. **Hotkey changes require a Hammerspoon reload** (hotkeys
+are bound when the Lua module loads, not per-read).
+
+**Why `~/.config` and not the repo?** It is the standard XDG location that
+apps and a future GUI look in by default. It survives repo operations (`git
+clean`, branch switch, re-clone) and keeps your personal settings separate
+from the program source.
+
+### Full annotated example
+
+Every key is shown at its default value. Copy only the keys you want to
+change; unspecified keys stay at their defaults.
+
+```yaml
+# Which TTS engine to use.
+#   say    — macOS /usr/bin/say (zero latency, inherits Spoken Content voice)
+#   kokoro — local neural TTS (requires model files downloaded by install.sh)
+engine: say
+
+# ---------------------------------------------------------------------------
+# Hotkeys
+# ---------------------------------------------------------------------------
+# Control model:
+#   The toggle hotkey = START / PAUSE / RESUME. It never stops a read.
+#   To STOP a read, click the top-center transport pill:
+#     left zone  = play / pause
+#     right zone = stop
+# Hotkey changes require a Hammerspoon reload to take effect.
+hotkeys:
+  toggle: ["ctrl", "alt", "cmd", "S"]       # start / pause / resume
+  read_window: ["ctrl", "alt", "cmd", "W"]  # same control model, for window reads
+  show_alerts: true                          # flash the transport/status pill on start/stop
+
+# ---------------------------------------------------------------------------
+# Voice
+# ---------------------------------------------------------------------------
+voice:
+  # say engine: which voice to use.
+  #   system           — no -v flag passed to say; inherits the macOS Spoken
+  #                      Content voice (System Settings → Accessibility → Read &
+  #                      Speak → System Voice). If that is a Siri voice,
+  #                      readaloud speaks in it — this is the only way to reach
+  #                      Siri voices.
+  #   "Zoe (Premium)"  — any named Premium voice (download in Manage Voices first)
+  say_voice: system
+
+  # say engine speaking rate (words per minute).
+  base_wpm: 240
+
+  # kokoro engine: voice identifier.
+  kokoro_voice: af_heart
+
+  # kokoro engine: playback speed multiplier (1.0 = natural).
+  speed: 1.1
+
+# ---------------------------------------------------------------------------
+# Alerts (transport / status pill)
+# ---------------------------------------------------------------------------
+alerts:
+  # Vertical center of the status pill, as a percentage of screen height.
+  # 0 = top of screen, 50 = center. Default 3.5 puts it near the top edge.
+  y_pct: 3.5
+
+  # How long a transient alert (e.g. "stopped") lingers before fading (seconds).
+  duration_s: 1.2
+
+# ---------------------------------------------------------------------------
+# Headers
+# ---------------------------------------------------------------------------
+headers:
+  # Headers are read at base_wpm * rate_factor — slightly slower for emphasis.
+  rate_factor: 0.85
+
+  # Silence inserted before a header (milliseconds).
+  pause_before_ms: 500
+
+  # Silence inserted after a header (milliseconds).
+  pause_after_ms: 400
+
+  # When true, lines that are ALL CAPS are treated as pseudo-headers and get
+  # the same rate/pause treatment as markdown ## headers.
+  treat_all_caps_lines_as_headers: true
+
+# ---------------------------------------------------------------------------
+# Pauses
+# ---------------------------------------------------------------------------
+pauses:
+  # Silence after a paragraph break (milliseconds).
+  paragraph_ms: 350
+
+  # Silence after each list item (milliseconds).
+  list_item_ms: 200
+
+  # Silence when a horizontal rule (---) is encountered (milliseconds).
+  horizontal_rule_ms: 600
+
+# ---------------------------------------------------------------------------
+# Code blocks
+# ---------------------------------------------------------------------------
+code_blocks:
+  # How to handle fenced code blocks.
+  #   skip         — announce the block ("code block, N lines") but do not read it
+  #   read         — read the code verbatim
+  #   silent-skip  — silently skip without any announcement
+  mode: skip
+
+  # Spoken text when mode is `skip`. {lines} is replaced with the line count.
+  announce_template: "code block, {lines} lines"
+
+# ---------------------------------------------------------------------------
+# Text cleaning
+# ---------------------------------------------------------------------------
+clean:
+  # Hard-wrap repair: rejoin lines broken by terminal column limits.
+  #   smart  — rejoin only when the line looks hard-wrapped (heuristic)
+  #   always — always rejoin consecutive non-blank lines
+  #   never  — leave line breaks as-is
+  rejoin: smart
+
+  # How to speak URLs.
+  #   domain  — say only the domain (e.g. "github.com")
+  #   full    — read the full URL
+  #   skip    — silence URLs entirely
+  urls: domain
+
+  # How to speak filesystem paths.
+  #   basename — say only the last component (e.g. "config.yaml")
+  #   full     — read the full path
+  #   skip     — silence paths entirely
+  paths: basename
+
+  # How to handle emoji.
+  #   skip  — remove emoji silently
+  #   name  — speak the emoji's Unicode name (e.g. "thumbs up")
+  emoji: skip
+
+# ---------------------------------------------------------------------------
+# Mute rules
+# ---------------------------------------------------------------------------
+# Suppress text that clutters reads (TUI chrome, UI labels, boilerplate).
+# Rules are case-sensitive and apply to both selection and window reads.
+#
+# Rule grammar:
+#   plain string        — excised wherever it appears in the line
+#   re:<regex>          — Python regex, excised per line (^ and $ anchor to a line)
+#   drop-line:<str>     — drop the whole line if it contains <str>
+#   drop-line:re:<rx>   — drop the whole line if the regex matches it
+#
+# blocks entries match a group's START line (plain string or re:<rx>; no
+# drop-line: prefix here) and drop that line plus every following line UNTIL
+# the next blank line. The blank line itself is preserved. Use blocks for
+# multi-line groups that share no per-line marker (e.g. a tool-call header
+# followed by indented result lines).
+#
+# To find an app's name for mute.by_app, check the `app=` field in
+# ~/.local/state/readaloud/hammerspoon.log.
+mute:
+  global: []   # rules applied to every app
+  by_app: {}   # per-app rules; key = app name from hammerspoon.log
+  blocks: []   # block-drop rules (start-line match → drop until next blank)
+
+# ---------------------------------------------------------------------------
+# Playback
+# ---------------------------------------------------------------------------
+playback:
+  # On resume after a pause, replay the last N milliseconds of already-played
+  # audio to restore context before continuing. Set to 0 to disable.
+  resume_rewind_ms: 600
+
+# ---------------------------------------------------------------------------
+# Window read
+# ---------------------------------------------------------------------------
+window_read:
+  # Maximum characters the window-read AX walk will capture. Caps very long
+  # documents so the pipeline stays responsive.
+  max_chars: 20000
+
+# ---------------------------------------------------------------------------
+# Limits
+# ---------------------------------------------------------------------------
+limits:
+  # Guard against accidental ⌘A → read-all. Selections longer than this are
+  # silently truncated.
+  max_selection_chars: 60000
+```
+
+### Per-feature notes
+
+#### `engine`
+
+`say` (default) calls macOS `/usr/bin/say` — zero latency and no model files
+required. `kokoro` uses local neural TTS, synthesizing chunk-by-chunk in a
+background thread; it starts playback after the first chunk and runs fully
+offline.
+
+#### `hotkeys`
+
+The toggle hotkey (`ctrl+alt+cmd+S` by default) cycles through three states:
+**start → pause → resume**. It never stops a read outright. To **stop**,
+click the top-center transport pill — its left zone is play/pause and its
+right zone is stop. Hotkey changes need a Hammerspoon reload.
+
+#### `voice`
+
+`say_voice: system` (the default) omits the `-v` flag from `say`, so it
+inherits whatever voice is set in **System Settings → Accessibility → Read &
+Speak → System Voice**. If that is a Siri voice, readaloud speaks in it —
+this is the only way to reach Siri voices from a script.
+
+To use a specific named voice, download it first (System Settings →
+Accessibility → Read & Speak → Manage Voices), then set:
+
+```yaml
+voice:
+  say_voice: "Zoe (Premium)"
+```
+
+For kokoro, `kokoro_voice` picks the voice bundle and `speed` is a playback
+multiplier (`1.0` = natural rate).
+
+#### `alerts`
+
+The transport/status pill appears at the top center of the screen. `y_pct`
+controls its vertical position as a percentage of screen height (default `3.5`
+puts it near the top edge). `duration_s` is how long a transient alert like
+"stopped" lingers before fading.
+
+#### `headers`, `pauses`, `code_blocks`
+
+These control prosody. Headers are read at `base_wpm * rate_factor` with
+configurable silence before and after. Lines in ALL CAPS are optionally
+treated as pseudo-headers. Paragraph, list-item, and horizontal-rule pauses
+add natural breathing room. Code blocks can be announced (`skip`), read
+verbatim (`read`), or silently skipped (`silent-skip`).
+
+#### `clean`
+
+`rejoin: smart` repairs hard-wrapped terminal lines (lines broken by column
+limits). `urls` and `paths` control how URLs and filesystem paths are spoken:
+`domain` / `basename` (default) keep reads concise; `full` reads everything;
+`skip` silences them. `emoji: skip` removes emoji silently; `name` speaks
+their Unicode names.
+
+#### `mute`
+
+Suppress noisy TUI chrome. Rules apply to both selection and window reads and
+are case-sensitive. See the rule grammar in the annotated example above.
+
+Proven Claude Code config example:
+
+```yaml
+mute:
+  global:
+    - "drop-line:ctrl+o to expand"   # excise a specific UI label globally
+    - "re:^\\s*✻"                    # drop spinner/status glyphs
+
+  blocks:
+    - "re:^⏺ \\w+\\("               # Claude Code tool-call + its ⎿ result body
+    - "re:^\\s*⎿"                    # orphaned result continuation lines
+
+  by_app:
+    "Claude Code":
+      - "re:^\\s*⏺\\s*"             # strip leading ⏺ bullet from tool lines
+      - "drop-line:ctrl+o to expand"
+    Arc:
+      - "Skip to content"
+```
+
+To find an app's name, check the `app=` field in
+`~/.local/state/readaloud/hammerspoon.log`.
+
+#### `playback`
+
+`resume_rewind_ms: 600` replays the last 600 ms of audio when you resume
+after a pause, giving re-entry context. Set to `0` to disable.
+
+#### `window_read` and `limits`
+
+`window_read.max_chars` caps how many characters the accessibility walk
+captures for a window read. `limits.max_selection_chars` guards against
+accidental ⌘A → read-all by silently truncating selections beyond the limit.
 
 ## CLI
 
