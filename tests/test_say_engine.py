@@ -14,12 +14,15 @@ import pytest
 
 from readaloud.config import DEFAULTS
 from readaloud.engines.say_engine import (
+    FIRST_CHUNK_CHARS,
+    MAX_COALESCE_CHARS,
     SAMPLE_RATE,
     SAY_BIN,
     SayEngine,
     _coalesce,
     _render_chunk_to_array,
     _silence,
+    _split_first_chunk,
     build_chunk_command,
 )
 from readaloud.script import Chunk
@@ -363,3 +366,141 @@ def test_config_validates_playback_resume_rewind_ms():
     bad_bool["playback"]["resume_rewind_ms"] = True  # bool excluded
     with pytest.raises(ConfigError):
         _validate(bad_bool)
+
+
+# ---------------------------------------------------------------------------
+# _coalesce cap: merged chunks never exceed MAX_COALESCE_CHARS
+# ---------------------------------------------------------------------------
+
+
+def test_coalesce_caps_merged_chunk_at_max_chars():
+    """A sequence of long sentences should produce multiple capped chunks."""
+    # Each sentence is ~100 chars; three together exceed MAX_COALESCE_CHARS.
+    s1 = "A" * 100 + "."
+    s2 = "B" * 100 + "."
+    s3 = "C" * 100 + "."
+    chunks = [
+        Chunk(text=s1, kind="paragraph"),
+        Chunk(text=s2, kind="paragraph"),
+        Chunk(text=s3, kind="paragraph"),
+    ]
+    out = _coalesce(chunks)
+    for c in out:
+        assert len(c.text) <= MAX_COALESCE_CHARS, (
+            f"chunk text len {len(c.text)} exceeds cap {MAX_COALESCE_CHARS}"
+        )
+
+
+def test_coalesce_no_text_lost_with_cap():
+    """All words survive coalescing even when the cap splits the merge."""
+    s1 = "Word " * 40  # 200 chars
+    s2 = "Other " * 40  # 240 chars
+    chunks = [
+        Chunk(text=s1, kind="paragraph"),
+        Chunk(text=s2, kind="paragraph"),
+    ]
+    out = _coalesce(chunks)
+    # Join all output text (normalized whitespace) and compare to input.
+    joined_out = " ".join(c.text.strip() for c in out)
+    joined_in = (s1.strip() + " " + s2.strip())
+    # Normalize multiple spaces.
+    import re
+    joined_out_n = re.sub(r"\s+", " ", joined_out).strip()
+    joined_in_n = re.sub(r"\s+", " ", joined_in).strip()
+    assert joined_out_n == joined_in_n
+
+
+# ---------------------------------------------------------------------------
+# _split_first_chunk: head size, boundary logic, round-trip text integrity
+# ---------------------------------------------------------------------------
+
+
+def test_split_first_chunk_short_text_unchanged():
+    """A chunk already at/under FIRST_CHUNK_CHARS is returned as-is (no split)."""
+    text = "Short sentence."
+    assert len(text) <= FIRST_CHUNK_CHARS
+    chunk = Chunk(text=text, kind="paragraph", pause_after_ms=350)
+    parts = _split_first_chunk(chunk)
+    assert len(parts) == 1
+    assert parts[0].text == text
+    assert parts[0].pause_after_ms == 350
+
+
+def test_split_first_chunk_long_text_produces_two_parts():
+    """A long chunk is split into head + remainder."""
+    text = "Hello world this is a test sentence. " + "X" * 200
+    chunk = Chunk(text=text, kind="paragraph", rate_factor=1.0, pause_after_ms=350)
+    parts = _split_first_chunk(chunk)
+    assert len(parts) == 2
+    head, rem = parts
+    # Head must be short (at or near FIRST_CHUNK_CHARS).
+    assert len(head.text) <= FIRST_CHUNK_CHARS + 20  # small slack for sentence pref
+    # Head pause is 0.
+    assert head.pause_after_ms == 0
+    # Remainder inherits the original pause.
+    assert rem.pause_after_ms == 350
+    # Both inherit the original rate_factor.
+    assert head.rate_factor == 1.0
+    assert rem.rate_factor == 1.0
+    # Round-trip: head + " " + remainder must equal the original (modulo whitespace join).
+    import re
+    rejoined = re.sub(r"\s+", " ", (head.text + " " + rem.text).strip())
+    original_n = re.sub(r"\s+", " ", text.strip())
+    assert rejoined == original_n
+
+
+def test_split_first_chunk_no_mid_word_split():
+    """The split point must not be inside a word."""
+    # A long first word followed by more text.
+    text = "Supercalifragilistic expialidocious and then some more words follow here yes."
+    # Pad to ensure it exceeds FIRST_CHUNK_CHARS.
+    text = text + " " + "more text padding " * 5
+    chunk = Chunk(text=text, kind="paragraph")
+    parts = _split_first_chunk(chunk)
+    if len(parts) == 2:
+        head, rem = parts
+        # Neither head nor rem should start or end mid-word.
+        # head ends at a space or punctuation (no partial word).
+        assert not head.text[-1].isalnum() or head.text[-1] in ".!?,;"
+
+
+def test_split_first_chunk_round_trip_no_text_lost():
+    """Concatenating head + remainder reconstructs the full original text."""
+    import re
+    text = "The quick brown fox jumped over the lazy dog. " * 5  # well over 90 chars
+    chunk = Chunk(text=text.strip(), kind="paragraph", pause_after_ms=500)
+    parts = _split_first_chunk(chunk)
+    if len(parts) == 1:
+        assert parts[0].text == chunk.text
+    else:
+        head, rem = parts
+        joined = re.sub(r"\s+", " ", (head.text + " " + rem.text).strip())
+        original = re.sub(r"\s+", " ", chunk.text.strip())
+        assert joined == original
+        assert head.pause_after_ms == 0
+        assert rem.pause_after_ms == chunk.pause_after_ms
+
+
+def test_coalesce_then_split_pipeline_no_text_lost():
+    """Full pipeline: coalesce -> split first chunk -> all text present."""
+    import re
+    sentences = [
+        Chunk(text="First sentence here.", kind="paragraph"),
+        Chunk(text="Second sentence here.", kind="paragraph"),
+        Chunk(text="Third sentence here.", kind="paragraph", pause_after_ms=350),
+    ]
+    coalesced = _coalesce(sentences)
+    if coalesced:
+        first_parts = _split_first_chunk(coalesced[0])
+        if len(first_parts) > 1:
+            all_chunks = first_parts + coalesced[1:]
+        else:
+            all_chunks = coalesced
+    else:
+        all_chunks = coalesced
+
+    all_text = " ".join(c.text.strip() for c in all_chunks)
+    original_text = " ".join(s.text.strip() for s in sentences)
+    all_text_n = re.sub(r"\s+", " ", all_text).strip()
+    original_n = re.sub(r"\s+", " ", original_text).strip()
+    assert all_text_n == original_n

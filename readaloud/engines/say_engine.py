@@ -26,8 +26,10 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import subprocess
 import threading
+import time as _time
 from dataclasses import replace
 from typing import Any
 
@@ -45,6 +47,19 @@ SAMPLE_RATE = 22050
 DATA_FORMAT = f"LEI16@{SAMPLE_RATE}"
 
 _SENTINEL = object()
+
+# Coalesce cap: bounds render time per chunk so no single say invocation is huge.
+# A neural voice costs ~1.6s startup + ~0.008s/char, so 220 chars ≈ 3.3s render.
+# After the first chunk, a chunk's audio (~44s of text at 190 wpm) covers the
+# next render (~3.3s), so no audible gap opens between subsequent chunks.
+MAX_COALESCE_CHARS = 220
+
+# First-chunk head target: the head renders in ~1.6 + 90*0.008 ≈ 2.3s (first
+# word audible at ~2.3s). The head's audio (~90 chars ≈ 18 words ≈ 3.6s at
+# 190 wpm) covers the next chunk's render (~3.3s for 220 chars), so no gap
+# opens after the head finishes. Only the FIRST chunk of a read is split this
+# way; subsequent chunks are capped by MAX_COALESCE_CHARS.
+FIRST_CHUNK_CHARS = 90
 
 
 def _say_args(voice: str, wpm: int | None) -> list[str]:
@@ -189,10 +204,14 @@ def _coalesce(chunks: list[Chunk]) -> list[Chunk]:
     granularity buys nothing here: we own playback and stop is frame-accurate
     regardless. Pause-only chunks (e.g. horizontal rules) are kept as
     boundaries.
+
+    Merged chunks are capped at MAX_COALESCE_CHARS so no single render is huge
+    and first-audio latency stays bounded. The cap never splits a word.
     """
     merged: list[Chunk] = []
     for chunk in chunks:
         prev = merged[-1] if merged else None
+        candidate = prev.text.rstrip() + " " + chunk.text.lstrip() if prev else ""
         if (
             prev is not None
             and prev.text.strip()
@@ -200,12 +219,75 @@ def _coalesce(chunks: list[Chunk]) -> list[Chunk]:
             and prev.rate_factor == chunk.rate_factor
             and prev.pause_after_ms == 0
             and chunk.pause_before_ms == 0
+            and len(candidate) <= MAX_COALESCE_CHARS
         ):
-            prev.text = prev.text.rstrip() + " " + chunk.text.lstrip()
+            prev.text = candidate
             prev.pause_after_ms = chunk.pause_after_ms
         else:
             merged.append(replace(chunk))
     return merged
+
+
+def _split_first_chunk(chunk: Chunk) -> list[Chunk]:
+    """Split the first rendered chunk into a short head + remainder.
+
+    The head targets FIRST_CHUNK_CHARS characters, broken at the best natural
+    boundary at or under the target:
+      1. End of first sentence (if already <= FIRST_CHUNK_CHARS chars).
+      2. Last comma or semicolon boundary at/under the target.
+      3. Last word boundary (space) at/under the target.
+      4. The target index itself (fallback, avoids an infinite loop).
+
+    If the chunk text is already <= FIRST_CHUNK_CHARS, it is returned as-is
+    (no split needed). The head gets pause_after_ms=0; the remainder inherits
+    the original chunk's rate_factor and trailing pause. No silence is
+    inserted — they play back-to-back seamlessly.
+    """
+    text = chunk.text
+    if len(text) <= FIRST_CHUNK_CHARS:
+        return [chunk]
+
+    target = FIRST_CHUNK_CHARS
+    head_end: int | None = None
+
+    # Prefer a sentence boundary (end of first sentence) if it is at/under target.
+    # Character class: straight/curly quotes, parens, brackets after sentence punctuation.
+    sent_re = re.compile(r"""[.!?]["')\]“”‘’]*\s+""")
+    for m in sent_re.finditer(text):
+        # end is the index AFTER the sentence-closing punctuation + trailing space
+        # We want head = text[:m.end()] stripped; check if that's <= target.
+        candidate_end = m.end()
+        if candidate_end <= target + 10:  # small slack for sentence boundary pref
+            head_end = candidate_end
+            break  # first sentence boundary at/near target wins
+
+    if head_end is None:
+        # Prefer last comma/semicolon at/under target.
+        for i in range(target, 0, -1):
+            if text[i] in (",", ";"):
+                head_end = i + 1
+                break
+
+    if head_end is None:
+        # Fall back to last word boundary (space) at/under target.
+        for i in range(target, 0, -1):
+            if text[i] == " ":
+                head_end = i + 1
+                break
+
+    if head_end is None:
+        head_end = target  # hard fallback
+
+    head_text = text[:head_end].rstrip()
+    rest_text = text[head_end:].lstrip()
+
+    if not head_text or not rest_text:
+        # Degenerate split — return whole chunk unchanged.
+        return [chunk]
+
+    head = replace(chunk, text=head_text, pause_after_ms=0)
+    remainder = replace(chunk, text=rest_text)  # keeps original pause_after_ms and rate_factor
+    return [head, remainder]
 
 
 def _silence(ms: int) -> np.ndarray:
@@ -355,6 +437,11 @@ class SayEngine:
 
         rate_works = _rate_sanity_check(self.cfg)
         chunks = _coalesce(chunks)
+        # Split the first chunk into a small head so first audio arrives quickly.
+        if chunks:
+            first_parts = _split_first_chunk(chunks[0])
+            if len(first_parts) > 1:
+                chunks = first_parts + chunks[1:]
         rewind_ms = self.cfg.get("playback", {}).get("resume_rewind_ms", 600)
         rewind_frames = int(rewind_ms / 1000 * SAMPLE_RATE)
         recent = np.zeros(0, dtype=np.float32)  # rolling buffer of recently-played frames
@@ -399,6 +486,8 @@ class SayEngine:
 
         with self._stream_lock:
             self._stream = stream
+        _t0 = _time.monotonic()
+        _first_audio_logged = False
         block = 2048  # frames per write; pause/stop are checked between blocks
         try:
             while not self._stop.is_set():
@@ -429,6 +518,12 @@ class SayEngine:
                         except Exception:
                             break  # stream aborted by stop()
                         # Do NOT append replay to recent — that would create a feedback echo.
+                    if not _first_audio_logged:
+                        log.info(
+                            "readaloud.say: first audio in %.2fs",
+                            _time.monotonic() - _t0,
+                        )
+                        _first_audio_logged = True
                     try:
                         stream.write(wave[start : start + block])
                     except Exception:
