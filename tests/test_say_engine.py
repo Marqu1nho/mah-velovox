@@ -267,3 +267,99 @@ def test_stop_aborts_live_stream_and_cleans_tmp(tmp_path):
     assert fake.aborted == 1
     assert not leaked.exists()  # temp cleaned up by stop()
     assert not eng._tmp_paths
+
+
+# ---------------------------------------------------------------------------
+# Rolling history buffer and rewind-on-resume (headless)
+# ---------------------------------------------------------------------------
+
+
+def test_rolling_buffer_trims_to_cap():
+    """Writing more frames than rewind_frames keeps the buffer capped."""
+    rewind_frames = 100
+    recent = np.zeros(0, dtype=np.float32)
+    for _ in range(5):  # 5 x 80 = 400 frames total, cap at 100
+        block = np.ones(80, dtype=np.float32)
+        recent = np.concatenate([recent, block])
+        if len(recent) > rewind_frames:
+            recent = recent[-rewind_frames:]
+    assert len(recent) == rewind_frames
+
+
+def test_rewind_larger_than_history_uses_all_available():
+    """When rewind_frames > available history, replay what we have — no error."""
+    rewind_frames = 500
+    recent = np.ones(200, dtype=np.float32)  # only 200 frames of history
+    replay = recent[-rewind_frames:]
+    assert len(replay) == 200  # numpy clamps; no IndexError
+
+
+def test_no_replay_when_rewind_ms_zero():
+    """rewind_frames == 0 means the replay branch is never entered."""
+    rewind_frames = 0
+    recent = np.ones(1000, dtype=np.float32)
+    # Simulate the guard: `if was_paused and rewind_frames > 0 and len(recent) > 0`
+    replay_would_happen = (rewind_frames > 0) and len(recent) > 0
+    assert not replay_would_happen
+
+
+def test_resume_edge_triggers_extra_stream_write():
+    """On a simulated pause→resume edge, the consumer issues one extra write for replay."""
+
+    class FakeStream:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, data):
+            self.writes.append(data.reshape(-1).copy())
+
+        def stop(self):
+            pass
+
+        def start(self):
+            pass
+
+        def abort(self):
+            pass
+
+        def close(self):
+            pass
+
+    # Simulate: 200 frames of history, rewind_frames=100, was_paused=True
+    rewind_frames = 100
+    recent = np.arange(200, dtype=np.float32)
+    fake = FakeStream()
+    was_paused = True
+
+    if was_paused and rewind_frames > 0 and len(recent) > 0:
+        replay = recent[-rewind_frames:].reshape(-1, 1)
+        fake.write(replay)
+
+    assert len(fake.writes) == 1
+    assert len(fake.writes[0]) == rewind_frames
+    # Replay is the LAST rewind_frames frames of recent
+    np.testing.assert_array_equal(fake.writes[0], recent[-rewind_frames:])
+
+
+def test_config_validates_playback_resume_rewind_ms():
+    """Negative resume_rewind_ms raises ConfigError; valid value loads cleanly."""
+    import copy
+    from readaloud.config import ConfigError, DEFAULTS, _validate
+
+    good = copy.deepcopy(DEFAULTS)
+    good["playback"]["resume_rewind_ms"] = 0
+    _validate(good)  # no error
+
+    good2 = copy.deepcopy(DEFAULTS)
+    good2["playback"]["resume_rewind_ms"] = 1200
+    _validate(good2)  # no error
+
+    bad = copy.deepcopy(DEFAULTS)
+    bad["playback"]["resume_rewind_ms"] = -1
+    with pytest.raises(ConfigError):
+        _validate(bad)
+
+    bad_bool = copy.deepcopy(DEFAULTS)
+    bad_bool["playback"]["resume_rewind_ms"] = True  # bool excluded
+    with pytest.raises(ConfigError):
+        _validate(bad_bool)

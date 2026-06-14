@@ -355,6 +355,9 @@ class SayEngine:
 
         rate_works = _rate_sanity_check(self.cfg)
         chunks = _coalesce(chunks)
+        rewind_ms = self.cfg.get("playback", {}).get("resume_rewind_ms", 600)
+        rewind_frames = int(rewind_ms / 1000 * SAMPLE_RATE)
+        recent = np.zeros(0, dtype=np.float32)  # rolling buffer of recently-played frames
         audio_q: queue.Queue = queue.Queue(maxsize=4)
 
         def producer() -> None:
@@ -412,15 +415,29 @@ class SayEngine:
                     if self._stop.is_set():
                         break
                     # Block here while paused; stop() sets _resume to release.
+                    was_paused = not self._resume.is_set()
                     while not self._resume.wait(timeout=0.2):
                         if self._stop.is_set():
                             break
                     if self._stop.is_set():
                         break
+                    # On resume edge: replay the last ~rewind_ms of audio for re-entry context.
+                    if was_paused and rewind_frames > 0 and len(recent) > 0:
+                        replay = recent[-rewind_frames:].reshape(-1, 1)
+                        try:
+                            stream.write(replay)
+                        except Exception:
+                            break  # stream aborted by stop()
+                        # Do NOT append replay to recent — that would create a feedback echo.
                     try:
                         stream.write(wave[start : start + block])
                     except Exception:
                         break  # stream aborted by stop()
+                    written_block = wave[start : start + block].reshape(-1)
+                    if rewind_frames > 0:
+                        recent = np.concatenate([recent, written_block])
+                        if len(recent) > rewind_frames:
+                            recent = recent[-rewind_frames:]
         finally:
             with self._stream_lock:
                 self._stream = None

@@ -135,6 +135,9 @@ class KokoroEngine:
         with self._stream_lock:
             self._stream = stream
         stream.start()
+        rewind_ms = self.cfg.get("playback", {}).get("resume_rewind_ms", 600)
+        rewind_frames = int(rewind_ms / 1000 * SAMPLE_RATE)
+        recent = np.zeros(0, dtype=np.float32)
         try:
             while not self._stop.is_set():
                 try:
@@ -152,15 +155,27 @@ class KokoroEngine:
                     if self._stop.is_set():
                         break
                     # Block here while paused; stop() sets _resume to release.
+                    was_paused = not self._resume.is_set()
                     while not self._resume.wait(timeout=0.2):
                         if self._stop.is_set():
                             break
                     if self._stop.is_set():
                         break
+                    if was_paused and rewind_frames > 0 and len(recent) > 0:
+                        replay = recent[-rewind_frames:].reshape(-1, 1)
+                        try:
+                            stream.write(replay)
+                        except Exception:
+                            break
                     try:
                         stream.write(wave[start : start + block])
                     except Exception:
                         break  # stream aborted by stop()
+                    written_block = wave[start : start + block].reshape(-1)
+                    if rewind_frames > 0:
+                        recent = np.concatenate([recent, written_block])
+                        if len(recent) > rewind_frames:
+                            recent = recent[-rewind_frames:]
         finally:
             with self._stream_lock:
                 self._stream = None

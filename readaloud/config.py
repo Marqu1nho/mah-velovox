@@ -62,6 +62,9 @@ DEFAULTS: dict[str, Any] = {
     "limits": {
         "max_selection_chars": 60000,
     },
+    "playback": {
+        "resume_rewind_ms": 600,
+    },
 }
 
 # Enum-ish keys validated for clear errors. Maps a dotted path to allowed values.
@@ -143,6 +146,7 @@ def _validate(cfg: dict[str, Any]) -> None:
         "pauses.paragraph_ms",
         "pauses.list_item_ms",
         "pauses.horizontal_rule_ms",
+        "playback.resume_rewind_ms",
     ):
         value = _get_dotted(cfg, dotted)
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:

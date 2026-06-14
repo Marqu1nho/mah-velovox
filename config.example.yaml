@@ -73,3 +73,6 @@ mute:
   #     - "drop-line:↓ to manage · ctrl+o to expand"
   #   Arc:
   #     - "Skip to content"
+
+playback:
+  resume_rewind_ms: 600   # on resume, replay the last N ms of audio for re-entry context (0 = off)
