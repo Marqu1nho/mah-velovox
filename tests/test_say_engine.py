@@ -14,15 +14,15 @@ import pytest
 
 from readaloud.config import DEFAULTS
 from readaloud.engines.say_engine import (
-    FIRST_CHUNK_CHARS,
-    MAX_COALESCE_CHARS,
+    MAX_CHARS,
+    RAMP_CHARS,
     SAMPLE_RATE,
     SAY_BIN,
     SayEngine,
     _coalesce,
     _render_chunk_to_array,
+    _resegment,
     _silence,
-    _split_first_chunk,
     build_chunk_command,
 )
 from readaloud.script import Chunk
@@ -369,30 +369,13 @@ def test_config_validates_playback_resume_rewind_ms():
 
 
 # ---------------------------------------------------------------------------
-# _coalesce cap: merged chunks never exceed MAX_COALESCE_CHARS
+# _coalesce: merges without cap (re-splitting is done by _resegment)
 # ---------------------------------------------------------------------------
 
 
-def test_coalesce_caps_merged_chunk_at_max_chars():
-    """A sequence of long sentences should produce multiple capped chunks."""
-    # Each sentence is ~100 chars; three together exceed MAX_COALESCE_CHARS.
-    s1 = "A" * 100 + "."
-    s2 = "B" * 100 + "."
-    s3 = "C" * 100 + "."
-    chunks = [
-        Chunk(text=s1, kind="paragraph"),
-        Chunk(text=s2, kind="paragraph"),
-        Chunk(text=s3, kind="paragraph"),
-    ]
-    out = _coalesce(chunks)
-    for c in out:
-        assert len(c.text) <= MAX_COALESCE_CHARS, (
-            f"chunk text len {len(c.text)} exceeds cap {MAX_COALESCE_CHARS}"
-        )
-
-
-def test_coalesce_no_text_lost_with_cap():
-    """All words survive coalescing even when the cap splits the merge."""
+def test_coalesce_merges_all_text_without_cap():
+    """_coalesce now merges without a char cap; _resegment handles sizing."""
+    import re
     s1 = "Word " * 40  # 200 chars
     s2 = "Other " * 40  # 240 chars
     chunks = [
@@ -400,107 +383,196 @@ def test_coalesce_no_text_lost_with_cap():
         Chunk(text=s2, kind="paragraph"),
     ]
     out = _coalesce(chunks)
-    # Join all output text (normalized whitespace) and compare to input.
-    joined_out = " ".join(c.text.strip() for c in out)
-    joined_in = (s1.strip() + " " + s2.strip())
-    # Normalize multiple spaces.
-    import re
-    joined_out_n = re.sub(r"\s+", " ", joined_out).strip()
-    joined_in_n = re.sub(r"\s+", " ", joined_in).strip()
+    # No cap: all text should merge into one chunk (same rate, no pause between).
+    assert len(out) == 1
+    joined_out_n = re.sub(r"\s+", " ", out[0].text).strip()
+    joined_in_n = re.sub(r"\s+", " ", (s1.strip() + " " + s2.strip())).strip()
     assert joined_out_n == joined_in_n
 
 
 # ---------------------------------------------------------------------------
-# _split_first_chunk: head size, boundary logic, round-trip text integrity
+# _resegment: ramp sizing, no text lost, no mid-word split, global ramp
 # ---------------------------------------------------------------------------
 
 
-def test_split_first_chunk_short_text_unchanged():
-    """A chunk already at/under FIRST_CHUNK_CHARS is returned as-is (no split)."""
-    text = "Short sentence."
-    assert len(text) <= FIRST_CHUNK_CHARS
-    chunk = Chunk(text=text, kind="paragraph", pause_after_ms=350)
-    parts = _split_first_chunk(chunk)
-    assert len(parts) == 1
-    assert parts[0].text == text
-    assert parts[0].pause_after_ms == 350
+def test_resegment_first_chunk_at_ramp_start():
+    """The first emitted chunk must be at most RAMP_CHARS[0] + small slack chars."""
+    # Build a long single-paragraph input (>500 chars worth of words).
+    words = "the quick brown fox jumped over the lazy dog "
+    text = (words * 15).strip()  # ~675 chars
+    chunks = [Chunk(text=text, kind="paragraph")]
+    out = _resegment(chunks)
+    # First chunk should be small — at/under first ramp target + slack for boundary pref.
+    assert len(out[0].text) <= RAMP_CHARS[0] + 15, (
+        f"first chunk len={len(out[0].text)} exceeds ramp[0]={RAMP_CHARS[0]}+15"
+    )
 
 
-def test_split_first_chunk_long_text_produces_two_parts():
-    """A long chunk is split into head + remainder."""
-    text = "Hello world this is a test sentence. " + "X" * 200
-    chunk = Chunk(text=text, kind="paragraph", rate_factor=1.0, pause_after_ms=350)
-    parts = _split_first_chunk(chunk)
-    assert len(parts) == 2
-    head, rem = parts
-    # Head must be short (at or near FIRST_CHUNK_CHARS).
-    assert len(head.text) <= FIRST_CHUNK_CHARS + 20  # small slack for sentence pref
-    # Head pause is 0.
-    assert head.pause_after_ms == 0
-    # Remainder inherits the original pause.
-    assert rem.pause_after_ms == 350
-    # Both inherit the original rate_factor.
-    assert head.rate_factor == 1.0
-    assert rem.rate_factor == 1.0
-    # Round-trip: head + " " + remainder must equal the original (modulo whitespace join).
+def test_resegment_chunks_never_exceed_max_chars():
+    """No emitted chunk must exceed MAX_CHARS (the plateau)."""
+    words = "the quick brown fox jumped over the lazy dog "
+    text = (words * 30).strip()  # ~1350 chars
+    chunks = [Chunk(text=text, kind="paragraph")]
+    out = _resegment(chunks)
+    for i, c in enumerate(out):
+        assert len(c.text) <= MAX_CHARS, (
+            f"chunk {i} len={len(c.text)} exceeds MAX_CHARS={MAX_CHARS}"
+        )
+
+
+def test_resegment_no_text_lost():
+    """Concatenating all emitted chunk texts equals the original (modulo whitespace)."""
     import re
-    rejoined = re.sub(r"\s+", " ", (head.text + " " + rem.text).strip())
-    original_n = re.sub(r"\s+", " ", text.strip())
-    assert rejoined == original_n
+    sentences = [
+        "First long sentence with several words to add up.",
+        "Second sentence that is also fairly long and descriptive.",
+        "Third sentence with yet more content to push us over the ramp.",
+        "Fourth sentence keeps going to ensure multiple chunks are emitted.",
+        "Fifth sentence is here so the total text is well over 300 characters.",
+    ]
+    input_text = " ".join(sentences)
+    chunks = [Chunk(text=input_text, kind="paragraph")]
+    out = _resegment(chunks)
+    rejoined = re.sub(r"\s+", " ", " ".join(c.text.strip() for c in out)).strip()
+    original = re.sub(r"\s+", " ", input_text.strip()).strip()
+    assert rejoined == original
 
 
-def test_split_first_chunk_no_mid_word_split():
-    """The split point must not be inside a word."""
-    # A long first word followed by more text.
-    text = "Supercalifragilistic expialidocious and then some more words follow here yes."
-    # Pad to ensure it exceeds FIRST_CHUNK_CHARS.
-    text = text + " " + "more text padding " * 5
-    chunk = Chunk(text=text, kind="paragraph")
-    parts = _split_first_chunk(chunk)
-    if len(parts) == 2:
-        head, rem = parts
-        # Neither head nor rem should start or end mid-word.
-        # head ends at a space or punctuation (no partial word).
-        assert not head.text[-1].isalnum() or head.text[-1] in ".!?,;"
+def test_resegment_no_mid_word_split():
+    """No emitted chunk should split in the middle of a word.
 
-
-def test_split_first_chunk_round_trip_no_text_lost():
-    """Concatenating head + remainder reconstructs the full original text."""
+    We verify this by checking that every adjacent pair of chunks (piece_i, piece_{i+1})
+    has a word boundary at their join: specifically, neither the last character of piece_i
+    nor the first character of piece_{i+1} is the interior of a word shared across the
+    boundary.  The correct method: find the join point in the normalized original text
+    and check that the char at that position (or just after) is a space.
+    """
     import re
-    text = "The quick brown fox jumped over the lazy dog. " * 5  # well over 90 chars
-    chunk = Chunk(text=text.strip(), kind="paragraph", pause_after_ms=500)
-    parts = _split_first_chunk(chunk)
-    if len(parts) == 1:
-        assert parts[0].text == chunk.text
+    words = "supercalifragilistic expialidocious antidisestablishmentarianism "
+    text = (words * 10).strip()
+    chunks = [Chunk(text=text, kind="paragraph")]
+    out = _resegment(chunks)
+    # Rebuild the full text from output chunks and find where each boundary falls.
+    # At each boundary, the original text must have a space (word boundary).
+    full_original = re.sub(r"\s+", " ", text.strip())
+    for i in range(len(out) - 1):
+        head_text = out[i].text.rstrip()
+        tail_text = out[i + 1].text.lstrip()
+        # The join in the original must be at a word boundary: head ends a word,
+        # tail starts a word (i.e. they are separated by at least one space in the original).
+        # Simplest check: head_text does not end with the start of a word that continues
+        # in tail_text. Reconstruct boundary by checking that head ends at a space-sep point.
+        boundary = head_text + " " + tail_text
+        # In the original, head_text followed by a space then tail_text must appear.
+        # Use normalized original to check.
+        head_n = re.sub(r"\s+", " ", head_text)
+        tail_n = re.sub(r"\s+", " ", tail_text)
+        # The last word of head must be a complete word in the original.
+        last_word_of_head = head_n.split()[-1] if head_n.split() else ""
+        first_word_of_tail = tail_n.split()[0] if tail_n.split() else ""
+        # Check neither word is a prefix/suffix of a longer token that spans the boundary.
+        # Specifically: last_word_of_head + first_word_of_tail must NOT appear as a single
+        # token in the original (which would indicate a mid-word split).
+        if last_word_of_head and first_word_of_tail:
+            combined = last_word_of_head + first_word_of_tail
+            assert combined not in full_original, (
+                f"mid-word split at boundary {i}: "
+                f"'{last_word_of_head}' + '{first_word_of_tail}' = '{combined}' "
+                f"appears in original as a single token"
+            )
+
+
+def test_resegment_ramp_advances_globally_across_paragraphs():
+    """By the time paragraph 2 starts, the ramp should already be at plateau."""
+    # Para 1: enough text to exhaust all ramp steps.
+    para1_text = ("word " * 100).strip()  # ~500 chars; will emit 3+ ramp chunks
+    para2_text = ("other " * 100).strip()  # another 500 chars
+    chunks = [
+        Chunk(text=para1_text, kind="paragraph", pause_after_ms=350),
+        Chunk(text=para2_text, kind="paragraph", pause_after_ms=350),
+    ]
+    out = _resegment(chunks)
+    # Find first chunk belonging to paragraph 2 (after the pause boundary).
+    # The first chunk of the entire read is small; by para 2 we should be at plateau.
+    # Identify the para2 chunks: they come after a chunk with pause_after_ms=350.
+    para2_chunks = []
+    found_boundary = False
+    for c in out:
+        if found_boundary:
+            para2_chunks.append(c)
+        if c.pause_after_ms == 350 and not found_boundary:
+            found_boundary = True
+
+    assert para2_chunks, "no para2 chunks found"
+    # First chunk of para2 should be at plateau (MAX_CHARS) or at least > RAMP_CHARS[0],
+    # because the ramp was exhausted during para1.
+    first_para2_len = len(para2_chunks[0].text)
+    assert first_para2_len > RAMP_CHARS[0], (
+        f"ramp appears to have reset: para2 first chunk len={first_para2_len} "
+        f"which is at/under ramp[0]={RAMP_CHARS[0]}"
+    )
+
+
+def test_resegment_pause_only_chunk_passes_through():
+    """HR chunks (empty text with pause) pass through untouched as boundaries."""
+    chunks = [
+        Chunk(text="Some paragraph text here.", kind="paragraph"),
+        Chunk(text="", kind="hr", pause_after_ms=600),
+        Chunk(text="Another paragraph after the rule.", kind="paragraph"),
+    ]
+    out = _resegment(chunks)
+    kinds = [c.kind for c in out]
+    assert "hr" in kinds
+    hr_chunks = [c for c in out if c.kind == "hr"]
+    assert len(hr_chunks) == 1
+    assert hr_chunks[0].pause_after_ms == 600
+
+
+def test_resegment_rate_changed_chunk_stays_separate():
+    """A header with a different rate_factor is emitted as its own boundary."""
+    chunks = [
+        Chunk(text="Header title here.", kind="header", rate_factor=0.85,
+              pause_before_ms=500, pause_after_ms=400),
+        Chunk(text="Body paragraph text follows the header.", kind="paragraph",
+              rate_factor=1.0),
+    ]
+    out = _resegment(chunks)
+    # Header and body should stay separate (different rate_factor).
+    rates = [c.rate_factor for c in out]
+    assert 0.85 in rates and 1.0 in rates
+    header_chunks = [c for c in out if c.rate_factor == 0.85]
+    assert header_chunks[0].pause_before_ms == 500
+    assert header_chunks[-1].pause_after_ms == 400
+
+
+def test_resegment_pause_attrs_on_first_and_last_of_run():
+    """For a multi-piece run: first piece has pause_before, last has pause_after."""
+    # Build a text long enough to produce multiple ramp pieces from one run.
+    text = ("alpha beta gamma delta epsilon zeta eta theta iota kappa " * 20).strip()
+    chunks = [
+        Chunk(text=text, kind="paragraph", pause_before_ms=200, pause_after_ms=350)
+    ]
+    out = _resegment(chunks)
+    if len(out) > 1:
+        assert out[0].pause_before_ms == 200
+        assert out[0].pause_after_ms == 0       # interior: no trailing pause
+        assert out[-1].pause_after_ms == 350
+        assert out[-1].pause_before_ms == 0     # interior: no leading pause
     else:
-        head, rem = parts
-        joined = re.sub(r"\s+", " ", (head.text + " " + rem.text).strip())
-        original = re.sub(r"\s+", " ", chunk.text.strip())
-        assert joined == original
-        assert head.pause_after_ms == 0
-        assert rem.pause_after_ms == chunk.pause_after_ms
+        # Short input that fits in one piece — pauses on that single piece.
+        assert out[0].pause_before_ms == 200
+        assert out[0].pause_after_ms == 350
 
 
-def test_coalesce_then_split_pipeline_no_text_lost():
-    """Full pipeline: coalesce -> split first chunk -> all text present."""
+def test_resegment_pipeline_no_text_lost_multi_sentence():
+    """Full _resegment pipeline over multi-sentence input: no text lost."""
     import re
     sentences = [
         Chunk(text="First sentence here.", kind="paragraph"),
         Chunk(text="Second sentence here.", kind="paragraph"),
         Chunk(text="Third sentence here.", kind="paragraph", pause_after_ms=350),
     ]
-    coalesced = _coalesce(sentences)
-    if coalesced:
-        first_parts = _split_first_chunk(coalesced[0])
-        if len(first_parts) > 1:
-            all_chunks = first_parts + coalesced[1:]
-        else:
-            all_chunks = coalesced
-    else:
-        all_chunks = coalesced
-
-    all_text = " ".join(c.text.strip() for c in all_chunks)
-    original_text = " ".join(s.text.strip() for s in sentences)
-    all_text_n = re.sub(r"\s+", " ", all_text).strip()
-    original_n = re.sub(r"\s+", " ", original_text).strip()
-    assert all_text_n == original_n
+    out = _resegment(sentences)
+    all_text = re.sub(r"\s+", " ", " ".join(c.text.strip() for c in out)).strip()
+    original_text = re.sub(r"\s+", " ", " ".join(s.text.strip() for s in sentences)).strip()
+    assert all_text == original_text

@@ -48,18 +48,26 @@ DATA_FORMAT = f"LEI16@{SAMPLE_RATE}"
 
 _SENTINEL = object()
 
-# Coalesce cap: bounds render time per chunk so no single say invocation is huge.
-# A neural voice costs ~1.6s startup + ~0.008s/char, so 220 chars ≈ 3.3s render.
-# After the first chunk, a chunk's audio (~44s of text at 190 wpm) covers the
-# next render (~3.3s), so no audible gap opens between subsequent chunks.
-MAX_COALESCE_CHARS = 220
-
-# First-chunk head target: the head renders in ~1.6 + 90*0.008 ≈ 2.3s (first
-# word audible at ~2.3s). The head's audio (~90 chars ≈ 18 words ≈ 3.6s at
-# 190 wpm) covers the next chunk's render (~3.3s for 220 chars), so no gap
-# opens after the head finishes. Only the FIRST chunk of a read is split this
-# way; subsequent chunks are capped by MAX_COALESCE_CHARS.
-FIRST_CHUNK_CHARS = 90
+# Ramped chunk sizes for gap-free pipelining.
+#
+# The producer renders chunk N+1 while the consumer plays chunk N. No gap
+# requires: audio_duration(chunk_i) >= render_time(chunk_{i+1}).
+#
+# Measured on this machine:
+#   render_time(chars) ≈ 1.6 + 0.008 * chars  seconds (neural voice startup)
+#   audio_duration(chars) ≈ chars * 12 / base_wpm  seconds (≈0.041s/char at 295wpm)
+#
+# Ramp verification (across 240–330 wpm range):
+#   render(90)  = 2.32s → first audio at ~2.3s (fast first word)
+#   audio(90)  @~300wpm ≈ 3.6s  ≥  render(150)=2.8s  ✓
+#   audio(150) @~300wpm ≈ 6.0s  ≥  render(220)=3.4s  ✓
+#   audio(220) @~300wpm ≈ 8.8s  ≥  render(240)=3.5s  ✓  (plateau)
+#
+# The ramp advances GLOBALLY across the entire read — it is NOT reset per
+# paragraph. Only the very first few emitted chunks of a read are small,
+# keeping first-word latency low (~2.3s), and all later chunks are MAX_CHARS.
+RAMP_CHARS = [90, 150, 220]   # first N emitted chunks target these sizes
+MAX_CHARS = 240                # all subsequent chunks (and the plateau) cap here
 
 
 def _say_args(voice: str, wpm: int | None) -> list[str]:
@@ -205,13 +213,14 @@ def _coalesce(chunks: list[Chunk]) -> list[Chunk]:
     regardless. Pause-only chunks (e.g. horizontal rules) are kept as
     boundaries.
 
-    Merged chunks are capped at MAX_COALESCE_CHARS so no single render is huge
-    and first-audio latency stays bounded. The cap never splits a word.
+    Unlike the old coalesce, this pass merges WITHOUT a char cap — the
+    downstream _resegment() step re-splits the merged runs at ramp-sized
+    boundaries. The only merge guard is whether chunks are in the same run
+    (same rate_factor, no pause between them, both have non-empty text).
     """
     merged: list[Chunk] = []
     for chunk in chunks:
         prev = merged[-1] if merged else None
-        candidate = prev.text.rstrip() + " " + chunk.text.lstrip() if prev else ""
         if (
             prev is not None
             and prev.text.strip()
@@ -219,75 +228,140 @@ def _coalesce(chunks: list[Chunk]) -> list[Chunk]:
             and prev.rate_factor == chunk.rate_factor
             and prev.pause_after_ms == 0
             and chunk.pause_before_ms == 0
-            and len(candidate) <= MAX_COALESCE_CHARS
         ):
-            prev.text = candidate
+            prev.text = prev.text.rstrip() + " " + chunk.text.lstrip()
             prev.pause_after_ms = chunk.pause_after_ms
         else:
             merged.append(replace(chunk))
     return merged
 
 
-def _split_first_chunk(chunk: Chunk) -> list[Chunk]:
-    """Split the first rendered chunk into a short head + remainder.
+def _find_split_point(text: str, target: int) -> int:
+    """Find the split index NEAREST to ``target`` at a clean boundary.
 
-    The head targets FIRST_CHUNK_CHARS characters, broken at the best natural
-    boundary at or under the target:
-      1. End of first sentence (if already <= FIRST_CHUNK_CHARS chars).
-      2. Last comma or semicolon boundary at/under the target.
-      3. Last word boundary (space) at/under the target.
-      4. The target index itself (fallback, avoids an infinite loop).
+    We MAXIMIZE the piece size (boundary closest to ``target``, not the
+    earliest) so no piece is undersized: an undersized piece runs out of audio
+    before the next chunk finishes rendering, which causes an audible gap.
+    Splits are seamless (no pause inserted between pieces of a run), so
+    splitting inside a sentence is inaudible — size is what keeps the render
+    pipeline fed. We deliberately do NOT prefer commas: an early comma yields a
+    too-small chunk (that was the gap bug). Prefer a sentence end only when it
+    lands at/near target, else use the last word boundary (space) at/under
+    target. Never splits mid-word except the hard-cut fallback.
 
-    If the chunk text is already <= FIRST_CHUNK_CHARS, it is returned as-is
-    (no split needed). The head gets pause_after_ms=0; the remainder inherits
-    the original chunk's rate_factor and trailing pause. No silence is
-    inserted — they play back-to-back seamlessly.
+    Returns an index i such that text[:i] is the first piece and
+    text[i:].lstrip() is the remainder.
     """
-    text = chunk.text
-    if len(text) <= FIRST_CHUNK_CHARS:
-        return [chunk]
+    if target >= len(text):
+        return len(text)
 
-    target = FIRST_CHUNK_CHARS
-    head_end: int | None = None
+    best = 0
+    # Sentence boundary nearest target (small slack so a sentence ending just
+    # past target still counts). Character class after sentence-ending punct:
+    # straight/curly quotes, parens, brackets.
+    sent_re = re.compile(r"""[.!?]["')\]]*\s+""")
+    for m in sent_re.finditer(text, 0, target + 15):
+        if m.end() <= target + 10:
+            best = max(best, m.end())
+    # Last word boundary (space) at/under target.
+    for i in range(min(target, len(text) - 1), 0, -1):
+        if text[i] == " ":
+            best = max(best, i + 1)
+            break
+    # Hard fallback when there's no usable boundary (e.g. one giant token).
+    return best if best > 0 else target
 
-    # Prefer a sentence boundary (end of first sentence) if it is at/under target.
-    # Character class: straight/curly quotes, parens, brackets after sentence punctuation.
-    sent_re = re.compile(r"""[.!?]["')\]“”‘’]*\s+""")
-    for m in sent_re.finditer(text):
-        # end is the index AFTER the sentence-closing punctuation + trailing space
-        # We want head = text[:m.end()] stripped; check if that's <= target.
-        candidate_end = m.end()
-        if candidate_end <= target + 10:  # small slack for sentence boundary pref
-            head_end = candidate_end
-            break  # first sentence boundary at/near target wins
 
-    if head_end is None:
-        # Prefer last comma/semicolon at/under target.
-        for i in range(target, 0, -1):
-            if text[i] in (",", ";"):
-                head_end = i + 1
-                break
+def _resegment(chunks: list[Chunk], _ramp_start: int = 0) -> list[Chunk]:
+    """Coalesce + re-split chunks using a globally-advancing ramp of target sizes.
 
-    if head_end is None:
-        # Fall back to last word boundary (space) at/under target.
-        for i in range(target, 0, -1):
-            if text[i] == " ":
-                head_end = i + 1
-                break
+    Replaces the old (_coalesce + _split_first_chunk) pipeline with a single
+    pass that:
 
-    if head_end is None:
-        head_end = target  # hard fallback
+      1. Groups consecutive input chunks into "runs" — same rate_factor, no
+         pause between them, both having non-empty text.  A pause boundary,
+         rate change, or pause-only chunk (HR) ends the current run.
 
-    head_text = text[:head_end].rstrip()
-    rest_text = text[head_end:].lstrip()
+      2. For each run, concatenates all chunk text, then re-splits it into
+         pieces whose sizes follow the global ramp [90, 150, 220, 240, 240, …].
+         The ramp index advances globally across the entire read (not per run),
+         so only the very first few emitted chunks are small.
 
-    if not head_text or not rest_text:
-        # Degenerate split — return whole chunk unchanged.
-        return [chunk]
+      3. The run's leading pause_before_ms goes on its first emitted piece;
+         the trailing pause_after_ms goes on its last emitted piece; interior
+         pieces have no pauses.  rate_factor is carried through to every piece.
 
-    head = replace(chunk, text=head_text, pause_after_ms=0)
-    remainder = replace(chunk, text=rest_text)  # keeps original pause_after_ms and rate_factor
-    return [head, remainder]
+      4. Pause-only chunks (HR, empty text) pass through as their own boundary
+         pieces unchanged.
+
+    This guarantees audio_duration(chunk_i) >= render_time(chunk_{i+1}) across
+    the full read, eliminating the gap introduced when a tiny head chunk ran
+    out of audio before the next render completed.
+
+    ``_ramp_start`` is exposed only for testing (lets tests start mid-ramp).
+    """
+    coalesced = _coalesce(chunks)
+    result: list[Chunk] = []
+    ramp_idx = _ramp_start  # advances globally; never resets
+
+    def _target() -> int:
+        if ramp_idx < len(RAMP_CHARS):
+            return RAMP_CHARS[ramp_idx]
+        return MAX_CHARS
+
+    def _emit_run(run_chunk: Chunk) -> None:
+        """Re-split a single coalesced run chunk into ramp-sized pieces."""
+        nonlocal ramp_idx
+        text = run_chunk.text
+        pause_before = run_chunk.pause_before_ms
+        pause_after = run_chunk.pause_after_ms
+        rate_factor = run_chunk.rate_factor
+        kind = run_chunk.kind
+
+        pieces: list[str] = []
+        remaining = text
+        while remaining:
+            tgt = _target()
+            if len(remaining) <= tgt:
+                pieces.append(remaining)
+                ramp_idx += 1
+                remaining = ""
+            else:
+                split_at = _find_split_point(remaining, tgt)
+                head = remaining[:split_at].rstrip()
+                tail = remaining[split_at:].lstrip()
+                if not head:
+                    # Degenerate: no valid split point; take the whole remainder.
+                    pieces.append(remaining)
+                    ramp_idx += 1
+                    remaining = ""
+                else:
+                    pieces.append(head)
+                    ramp_idx += 1
+                    remaining = tail
+
+        for idx, piece_text in enumerate(pieces):
+            is_first = idx == 0
+            is_last = idx == len(pieces) - 1
+            result.append(
+                replace(
+                    run_chunk,
+                    text=piece_text,
+                    kind=kind,
+                    rate_factor=rate_factor,
+                    pause_before_ms=pause_before if is_first else 0,
+                    pause_after_ms=pause_after if is_last else 0,
+                )
+            )
+
+    for coalesced_chunk in coalesced:
+        if coalesced_chunk.text.strip():
+            _emit_run(coalesced_chunk)
+        else:
+            # Pause-only chunk (e.g. HR): pass through untouched.
+            result.append(replace(coalesced_chunk))
+
+    return result
 
 
 def _silence(ms: int) -> np.ndarray:
@@ -436,12 +510,9 @@ class SayEngine:
         _sweep_stale_tmp()  # clear any wavs orphaned by a prior hard-killed run
 
         rate_works = _rate_sanity_check(self.cfg)
-        chunks = _coalesce(chunks)
-        # Split the first chunk into a small head so first audio arrives quickly.
-        if chunks:
-            first_parts = _split_first_chunk(chunks[0])
-            if len(first_parts) > 1:
-                chunks = first_parts + chunks[1:]
+        # Resegment: coalesce runs then re-split at ramp-sized boundaries so
+        # audio_duration(chunk_i) >= render_time(chunk_{i+1}) with no gaps.
+        chunks = _resegment(chunks)
         rewind_ms = self.cfg.get("playback", {}).get("resume_rewind_ms", 600)
         rewind_frames = int(rewind_ms / 1000 * SAMPLE_RATE)
         recent = np.zeros(0, dtype=np.float32)  # rolling buffer of recently-played frames
