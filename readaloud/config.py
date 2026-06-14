@@ -1,6 +1,6 @@
 """Configuration loading, defaults, deep-merge, and validation.
 
-The defaults here mirror config.example.yaml (§04 of the spec) exactly.
+The defaults here mirror README.yaml (§04 of the spec) exactly.
 User config from ~/.config/readaloud/config.yaml is deep-merged over these.
 """
 

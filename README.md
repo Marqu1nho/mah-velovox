@@ -51,7 +51,7 @@ git clone <this repo> readaloud && cd readaloud
    CLI by absolute path — never relying on `PATH`.
 4. Downloads the kokoro model files into `~/.local/share/readaloud/models/`
    (skipped with `--no-kokoro`, and skipped if already present).
-5. Copies `config.example.yaml` → `~/.config/readaloud/config.yaml` (never
+5. Copies `README.yaml` → `~/.config/readaloud/config.yaml` (never
    overwrites an existing config).
 6. Installs Hammerspoon via `brew install --cask hammerspoon` if absent
    (instructs you if Homebrew is missing), symlinks `readaloud.lua` into
@@ -136,7 +136,7 @@ read** without reinstalling. **Hotkey changes require a Hammerspoon reload**
 | `hotkeys.read_window` | `[ctrl, alt, cmd, W]` | read focused window text |
 | `hotkeys.show_alerts` | `true` | flash start/stop alerts |
 | `voice.say_voice` | `system` | `system` (Spoken Content voice) or a named voice |
-| `voice.base_wpm` | `190` | say speaking rate (words/min) |
+| `voice.base_wpm` | `240` | say speaking rate (words/min) |
 | `voice.kokoro_voice` | `af_heart` | kokoro voice name |
 | `voice.speed` | `1.1` | kokoro speed (1.0 = natural) |
 | `headers.rate_factor` | `0.85` | headers read slower |
