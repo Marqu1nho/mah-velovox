@@ -16,18 +16,59 @@ import logging
 import os
 import queue
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from ..script import Chunk
+from .say_engine import _find_split_point
 
 log = logging.getLogger("readaloud.kokoro")
 
 SAMPLE_RATE = 24000  # kokoro-onnx output sample rate
 
 _SENTINEL = object()
+
+# Target size (chars) for the FIRST synthesized unit. The first chunk is split
+# into a small head + remainder so the first synth completes quickly and
+# playback starts sooner (time-to-first-word). kokoro synth is faster than
+# realtime, so a small head causes no render-starvation gap. Subsequent chunks
+# synthesize ahead during playback and are left untouched.
+_FIRST_HEAD_CHARS = 80
+
+
+def _split_first_chunk(chunks: list[Chunk]) -> list[Chunk]:
+    """Split the FIRST chunk into a small head + remainder for fast first word.
+
+    The head targets ``_FIRST_HEAD_CHARS`` chars, broken at a clean boundary
+    (reusing ``say_engine._find_split_point``, which keeps punctuation attached
+    and never splits mid-word except as a hard fallback). The head flows
+    seamlessly into the remainder, so:
+      - head: rate_factor and pause_before_ms carried; pause_after_ms = 0.
+      - remainder: keeps the original chunk's pause_after_ms and rate_factor;
+        pause_before_ms = 0 (no silence inserted between head and remainder).
+
+    Only the first chunk is touched. Returns the list unchanged when there are
+    no chunks, the first chunk's text is already <= target, or there is no
+    clean split point.
+    """
+    if not chunks:
+        return chunks
+    first = chunks[0]
+    text = first.text
+    if len(text.strip()) <= _FIRST_HEAD_CHARS:
+        return chunks
+    split_at = _find_split_point(text, _FIRST_HEAD_CHARS)
+    head = text[:split_at].rstrip()
+    tail = text[split_at:].lstrip()
+    if not head or not tail:
+        # No clean split point (or nothing left over) — leave it unchanged.
+        return chunks
+    head_chunk = replace(first, text=head, pause_after_ms=0)
+    tail_chunk = replace(first, text=tail, pause_before_ms=0)
+    return [head_chunk, tail_chunk, *chunks[1:]]
 
 
 def model_dir() -> Path:
@@ -113,6 +154,9 @@ class KokoroEngine:
         self._paused = False
         self._resume.set()
         kokoro = self._ensure_model()
+        # Split the first chunk into a small head + remainder so the first
+        # synth completes quickly and playback starts sooner (time-to-first-word).
+        chunks = _split_first_chunk(chunks)
         audio_q: queue.Queue = queue.Queue(maxsize=4)
 
         def producer() -> None:
