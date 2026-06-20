@@ -108,19 +108,86 @@ def stream(
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
 
-    # Build frame queue. For mock, an empty queue suffices (MockEngine ignores frames).
-    # Send the None sentinel so any engine waiting on the queue can drain.
-    frames: queue.Queue = queue.Queue()
-    frames.put(None)
+    if cfg.get("engine") == "mock":
+        # Mock path: empty queue with a sentinel — MockEngine ignores frames.
+        # IMPORTANT: this branch must NOT import sounddevice or capture.mic.
+        frames: queue.Queue = queue.Queue()
+        frames.put(None)
 
-    try:
-        for partial in eng.stream(frames, stop):
-            line = encode_partial(partial.text, partial.volatile)
-            sys.stdout.write(line)
-            sys.stdout.flush()
-    except Exception as exc:
-        print(f"speakwrite: stream error: {exc}", file=sys.stderr)
-        raise typer.Exit(code=1)
+        try:
+            for partial in eng.stream(frames, stop):
+                line = encode_partial(partial.text, partial.volatile)
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        except Exception as exc:
+            print(f"speakwrite: stream error: {exc}", file=sys.stderr)
+            raise typer.Exit(code=1)
+
+    else:
+        # Real mic path: open the microphone, check for silence on the first
+        # ~1 s (macOS Tahoe returns all-zero audio on mic-permission denial),
+        # then feed frames into the engine.
+        from .capture.mic import MicCapture, looks_silent, mic_permission_status
+        import numpy as np
+
+        status = mic_permission_status()
+        if status in ("denied", "restricted"):
+            print(
+                f"speakwrite: microphone access {status}; grant permission in "
+                "System Settings → Privacy & Security → Microphone",
+                file=sys.stderr,
+            )
+            raise typer.Exit(code=1)
+
+        cap = MicCapture(
+            sample_rate=getattr(eng, "sample_rate", 16000),
+            blocksize=1024,
+        )
+        mic_q = cap.open()
+
+        # Also hook SIGTERM/SIGINT to close the mic.
+        _orig_stop = stop.is_set
+
+        def _handle_stop_with_mic(signum, frame):  # noqa: ARG001
+            stop.set()
+            cap.close()
+
+        signal.signal(signal.SIGTERM, _handle_stop_with_mic)
+        signal.signal(signal.SIGINT, _handle_stop_with_mic)
+
+        # Collect the first ~1 s of audio to check for silence.
+        _silence_check_samples = getattr(eng, "sample_rate", 16000)
+        _first_audio: list = []
+        _first_audio_len = 0
+        _silence_checked = False
+
+        def _on_frame_silence_check(chunk):
+            nonlocal _first_audio_len, _silence_checked
+            if not _silence_checked:
+                _first_audio.append(chunk)
+                _first_audio_len += len(chunk)
+                if _first_audio_len >= _silence_check_samples:
+                    _silence_checked = True
+                    first_block = np.concatenate(_first_audio)
+                    if looks_silent(first_block):
+                        logging.getLogger("speakwrite").error(
+                            "mic returned silence — check microphone permission "
+                            "for the controlling app (macOS Tahoe returns zeros "
+                            "when access is denied without an error)"
+                        )
+
+        cap._on_frame = _on_frame_silence_check
+
+        try:
+            for partial in eng.stream(mic_q, stop):
+                line = encode_partial(partial.text, partial.volatile)
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        except Exception as exc:
+            print(f"speakwrite: stream error: {exc}", file=sys.stderr)
+            raise typer.Exit(code=1)
+        finally:
+            cap.close()
 
     final_text = polish(eng.final(), cfg.get("polish", "punctuation"))
     sys.stdout.write(encode_final(final_text))

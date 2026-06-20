@@ -30,9 +30,13 @@ def make_engine(cfg: dict[str, Any], injected: "Engine | None" = None) -> "Engin
         from .mock import MockEngine
         return MockEngine()
 
+    if name == "parakeet":
+        from .parakeet import ParakeetEngine
+        return ParakeetEngine(cfg)
+
     # Lazy import guard — these engines are not yet built.
     # The import is inside the branch so no heavy deps are pulled at module load.
-    if name in ("parakeet", "apple", "whisper"):
+    if name in ("apple", "whisper"):
         raise RuntimeError(f"engine '{name}' not yet built")
 
     raise RuntimeError(f"unknown engine: '{name}'")

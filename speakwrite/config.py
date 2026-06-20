@@ -18,7 +18,7 @@ DEFAULTS: dict[str, Any] = {
     "engine": "parakeet",           # parakeet | apple | whisper | mock
     "hotkeys": {
         "dictate": ["ctrl", "alt", "`"],
-        "mode": "push_to_talk",
+        "mode": "toggle",
     },
     "hud": {
         "show": True,

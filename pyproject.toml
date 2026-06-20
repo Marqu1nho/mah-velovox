@@ -31,3 +31,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["readaloud", "speakwrite"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (e.g. load an ASR model); deselect with -m 'not slow'",
+]

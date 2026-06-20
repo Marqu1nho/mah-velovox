@@ -144,8 +144,9 @@ def test_stream_mock_config_override(tmp_path, capsys):
     assert any(o.get("event") == "done" for o in objects)
 
 
-def test_stream_non_mock_exits_3(capsys):
-    code, out = _run(["stream", "--engine", "parakeet"], capsys=capsys)
+def test_stream_unbuilt_engine_exits_3(capsys):
+    """Engines that aren't built yet (apple, whisper) exit with code 3."""
+    code, out = _run(["stream", "--engine", "apple"], capsys=capsys)
     assert code == 3
 
 
