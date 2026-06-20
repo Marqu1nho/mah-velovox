@@ -17,6 +17,7 @@ Architecture mirrors kokoro_engine.py:
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 from typing import Any, Iterator
@@ -41,10 +42,19 @@ _DEFAULT_CHUNK_S = 1.0
 
 
 def _load_model(model_id: str = _MODEL_ID):
-    """Load (and cache on disk via HuggingFace) the parakeet model.
+    """Load the parakeet model from the local HuggingFace cache.
+
+    The weights are downloaded once by install/first-run; after that everything
+    is local. We force HF offline mode so model load makes NO network calls
+    (no HEAD requests, no "unauthenticated request" warnings) and works with no
+    internet. Set these BEFORE importing parakeet_mlx/huggingface_hub so they
+    take effect at import time.
 
     Lazy-imported so this module can be imported on Linux / without MLX.
     """
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     from parakeet_mlx import from_pretrained  # type: ignore[import]
     return from_pretrained(model_id)
 

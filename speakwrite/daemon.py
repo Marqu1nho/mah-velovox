@@ -203,10 +203,16 @@ class Daemon:
                 from .config import load_config as _lc2
                 cfg = _lc2()
 
+                _n_partials = 0
                 for partial in engine.stream(job.frames, job.stop):
+                    _n_partials += 1
                     job.out.put(("partial", partial.text, partial.volatile))
 
                 final_text = polish(engine.final(), cfg.get("polish", "punctuation"))
+                log.info(
+                    "dictate: produced %d partials, final=%d chars",
+                    _n_partials, len(final_text),
+                )
                 job.out.put(("final", final_text))
 
             except Exception as exc:
@@ -334,6 +340,9 @@ class Daemon:
                     if _first_audio_len >= _silence_check_samples:
                         _silence_checked = True
                         first_block = np.concatenate(_first_audio)
+                        from .capture.mic import rms as _rms
+                        level = _rms(first_block)
+                        log.info("dictate: first-second mic RMS=%.5f", level)
                         if looks_silent(first_block):
                             log.error(
                                 "mic returned silence — check microphone permission "
