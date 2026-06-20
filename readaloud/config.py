@@ -41,6 +41,7 @@ DEFAULTS: dict[str, Any] = {
         "paragraph_ms": 350,
         "list_item_ms": 200,
         "horizontal_rule_ms": 600,
+        "comma_ms": 150,
     },
     "code_blocks": {
         "mode": "skip",
@@ -147,6 +148,7 @@ def _validate(cfg: dict[str, Any]) -> None:
         "pauses.paragraph_ms",
         "pauses.list_item_ms",
         "pauses.horizontal_rule_ms",
+        "pauses.comma_ms",
         "playback.resume_rewind_ms",
     ):
         value = _get_dotted(cfg, dotted)

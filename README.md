@@ -230,6 +230,19 @@ pauses:
   # Silence when a horizontal rule (---) is encountered (milliseconds).
   horizontal_rule_ms: 600
 
+  # Silence inserted between intra-sentence clauses split at commas,
+  # semicolons, and colons (milliseconds). The punctuation mark stays
+  # attached to the end of each clause so the neural voice intones it as a
+  # continuation rather than a full stop.
+  #   150  — default; adds a natural breath after commas
+  #   0    — disable clause splitting entirely (one chunk per sentence)
+  #
+  # Note: clause splitting creates more, smaller chunks. With engine: kokoro
+  # this is fine (fast synthesis). With engine: say, each extra chunk adds
+  # ~1.6 s of render startup, so keep comma_ms modest or set it to 0 when
+  # using say.
+  comma_ms: 150
+
 # ---------------------------------------------------------------------------
 # Code blocks
 # ---------------------------------------------------------------------------

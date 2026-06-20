@@ -218,3 +218,104 @@ def test_end_to_end_tui_paste_pipeline():
     assert "github.com" in text_all
     assert "clean.py" in text_all
     assert "/Users/marcop" not in text_all
+
+
+# ---------------------------------------------------------------------------
+# Clause splitting (comma_ms)
+# ---------------------------------------------------------------------------
+
+def test_comma_ms_splits_sentence_into_clauses():
+    """comma_ms > 0: a sentence with commas becomes multiple clause chunks."""
+    cfg = _cfg(**{"pauses.comma_ms": 150})
+    chunks = make_script("The engine renders, plays fast, then ramps up.", cfg)
+    para = [c for c in chunks if c.kind == "paragraph"]
+    assert len(para) == 3
+    # Intermediate clauses get comma_ms; last gets the paragraph pause.
+    assert para[0].pause_after_ms == 150
+    assert para[1].pause_after_ms == 150
+    assert para[2].pause_after_ms == DEFAULTS["pauses"]["paragraph_ms"]
+
+
+def test_comma_ms_punctuation_stays_attached():
+    """The comma/semicolon/colon must stay attached to the preceding clause."""
+    cfg = _cfg(**{"pauses.comma_ms": 150})
+    chunks = make_script("First clause, second clause.", cfg)
+    para = [c for c in chunks if c.kind == "paragraph"]
+    assert para[0].text.endswith(",")
+    assert "second clause" in para[1].text
+
+
+def test_comma_ms_no_split_on_number_comma():
+    """'3,000' must NOT be split (no space after the comma)."""
+    cfg = _cfg(**{"pauses.comma_ms": 150})
+    chunks = make_script("There are 3,000 items in the list.", cfg)
+    para = [c for c in chunks if c.kind == "paragraph"]
+    assert len(para) == 1
+    assert "3,000" in para[0].text
+
+
+def test_comma_ms_no_split_on_time_colon():
+    """'10:30' must NOT be split (no space after the colon)."""
+    cfg = _cfg(**{"pauses.comma_ms": 150})
+    chunks = make_script("The meeting is at 10:30 today.", cfg)
+    para = [c for c in chunks if c.kind == "paragraph"]
+    assert len(para) == 1
+
+
+def test_comma_ms_zero_preserves_original_behavior():
+    """comma_ms == 0: exactly one chunk per sentence, no clause splitting."""
+    cfg = _cfg(**{"pauses.comma_ms": 0})
+    chunks = make_script("First sentence, with commas, everywhere.", cfg)
+    para = [c for c in chunks if c.kind == "paragraph"]
+    assert len(para) == 1
+    assert "First sentence, with commas, everywhere." in para[0].text
+
+
+def test_comma_ms_round_trip_text_preserved():
+    """Concatenating clause chunks (with spaces) must equal the original sentence."""
+    cfg = _cfg(**{"pauses.comma_ms": 150})
+    sentence = "The engine renders, plays fast, then ramps up."
+    chunks = make_script(sentence, cfg)
+    para = [c for c in chunks if c.kind == "paragraph"]
+    reconstructed = " ".join(c.text for c in para)
+    assert reconstructed == sentence
+
+
+def test_comma_ms_applies_to_list_item():
+    """Clause splitting applies to list_item blocks."""
+    cfg = _cfg(**{"pauses.comma_ms": 100})
+    chunks = make_script("- alpha, beta, gamma", cfg)
+    items = [c for c in chunks if c.kind == "list_item"]
+    assert len(items) == 3
+    assert items[0].pause_after_ms == 100
+    assert items[1].pause_after_ms == 100
+    assert items[2].pause_after_ms == DEFAULTS["pauses"]["list_item_ms"]
+
+
+def test_comma_ms_applies_to_blockquote():
+    """Clause splitting applies to blockquote blocks."""
+    cfg = _cfg(**{"pauses.comma_ms": 100})
+    chunks = make_script("> a wise quote, indeed", cfg)
+    bq = [c for c in chunks if c.kind == "blockquote"]
+    assert len(bq) == 2
+    assert bq[0].pause_after_ms == 100
+    assert bq[1].pause_after_ms == DEFAULTS["pauses"]["paragraph_ms"]
+
+
+def test_comma_ms_does_not_split_headers():
+    """Headers are never clause-split regardless of comma_ms."""
+    cfg = _cfg(**{"pauses.comma_ms": 150})
+    chunks = make_script("## Big Title, Subtitle", cfg)
+    headers = [c for c in chunks if c.kind == "header"]
+    assert len(headers) == 1
+    assert "Big Title, Subtitle" in headers[0].text
+
+
+def test_comma_ms_semicolon_and_colon_also_split():
+    """Semicolons and colons followed by a space also trigger clause splitting."""
+    cfg = _cfg(**{"pauses.comma_ms": 120})
+    chunks = make_script("First part; second part: third part.", cfg)
+    para = [c for c in chunks if c.kind == "paragraph"]
+    assert len(para) == 3
+    assert para[0].text.endswith(";")
+    assert para[1].text.endswith(":")

@@ -136,3 +136,21 @@ def test_defaults_match_spec_keys():
         "limits",
     ):
         assert key in DEFAULTS
+
+
+def test_comma_ms_default_is_150():
+    assert DEFAULTS["pauses"]["comma_ms"] == 150
+
+
+def test_comma_ms_zero_allowed(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("pauses:\n  comma_ms: 0\n")
+    cfg = load_config(p)
+    assert cfg["pauses"]["comma_ms"] == 0
+
+
+def test_comma_ms_negative_rejected(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("pauses:\n  comma_ms: -1\n")
+    with pytest.raises(ConfigError, match="comma_ms"):
+        load_config(p)

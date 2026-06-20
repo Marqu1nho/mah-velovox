@@ -93,6 +93,38 @@ def split_sentences(text: str) -> list[str]:
 _split_sentences = split_sentences
 
 
+# Clause splitting: split at , ; : when followed by whitespace only.
+# Numbers like "3,000" or "10:30" are safe because they have no whitespace
+# after the punctuation mark.
+_CLAUSE_BOUNDARY_RE = re.compile(r"([,;:])(\s+)")
+
+
+def _split_clauses(sentence: str, comma_ms: int) -> list[tuple[str, int]]:
+    """Split a sentence into (clause_text, pause_ms) pairs at , ; :
+    followed by whitespace.  The punctuation mark stays attached to the
+    preceding clause text.  The LAST clause always gets pause_ms=0 so the
+    caller can assign the correct inter-sentence or block-level pause.
+
+    When comma_ms <= 0 or there are no split points, returns [(sentence, 0)].
+    """
+    if comma_ms <= 0:
+        return [(sentence, 0)]
+    parts: list[str] = []
+    last = 0
+    for m in _CLAUSE_BOUNDARY_RE.finditer(sentence):
+        # Split after the punctuation mark but before the whitespace,
+        # so the mark stays with the preceding clause.
+        split_at = m.start(2)  # first char of the whitespace run
+        parts.append(sentence[last:split_at])
+        last = m.end(2)        # resume after the whitespace
+    if last < len(sentence):
+        parts.append(sentence[last:])
+    parts = [p for p in parts if p]
+    if len(parts) <= 1:
+        return [(sentence, 0)]
+    return [(p, comma_ms) for p in parts[:-1]] + [(parts[-1], 0)]
+
+
 def build_script(blocks: list[Block], cfg: dict[str, Any]) -> list[Chunk]:
     """Turn parsed blocks into a flat speech script with prosody."""
     headers_cfg = cfg.get("headers", {})
@@ -106,6 +138,7 @@ def build_script(blocks: list[Block], cfg: dict[str, Any]) -> list[Chunk]:
     p_para = int(pauses_cfg.get("paragraph_ms", 350))
     p_list = int(pauses_cfg.get("list_item_ms", 200))
     p_hr = int(pauses_cfg.get("horizontal_rule_ms", 600))
+    comma_ms = int(pauses_cfg.get("comma_ms", 150))
 
     code_mode = code_cfg.get("mode", "skip")
     announce_template = code_cfg.get("announce_template", "code block, {lines} lines")
@@ -129,38 +162,54 @@ def build_script(blocks: list[Block], cfg: dict[str, Any]) -> list[Chunk]:
         elif block.kind == "paragraph":
             sentences = _split_sentences(block.text)
             for idx, sent in enumerate(sentences):
-                last = idx == len(sentences) - 1
-                chunks.append(
-                    Chunk(
-                        text=sent,
-                        kind="paragraph",
-                        rate_factor=1.0,
-                        pause_after_ms=p_para if last else 0,
+                last_sent = idx == len(sentences) - 1
+                terminal_pause = p_para if last_sent else 0
+                clauses = _split_clauses(sent, comma_ms)
+                for c_idx, (clause_text, clause_pause) in enumerate(clauses):
+                    last_clause = c_idx == len(clauses) - 1
+                    chunks.append(
+                        Chunk(
+                            text=clause_text,
+                            kind="paragraph",
+                            rate_factor=1.0,
+                            pause_after_ms=terminal_pause if last_clause else clause_pause,
+                        )
                     )
-                )
 
         elif block.kind == "list_item":
             if not block.text:
                 continue
             sentences = _split_sentences(block.text) or [block.text]
             for idx, sent in enumerate(sentences):
-                last = idx == len(sentences) - 1
-                chunks.append(
-                    Chunk(
-                        text=sent,
-                        kind="list_item",
-                        rate_factor=1.0,
-                        pause_after_ms=p_list if last else 0,
+                last_sent = idx == len(sentences) - 1
+                terminal_pause = p_list if last_sent else 0
+                clauses = _split_clauses(sent, comma_ms)
+                for c_idx, (clause_text, clause_pause) in enumerate(clauses):
+                    last_clause = c_idx == len(clauses) - 1
+                    chunks.append(
+                        Chunk(
+                            text=clause_text,
+                            kind="list_item",
+                            rate_factor=1.0,
+                            pause_after_ms=terminal_pause if last_clause else clause_pause,
+                        )
                     )
-                )
 
         elif block.kind == "blockquote":
             if not block.text:
                 continue
-            for sent in _split_sentences(block.text) or [block.text]:
-                chunks.append(
-                    Chunk(text=sent, kind="blockquote", pause_after_ms=p_para)
-                )
+            sentences_bq = _split_sentences(block.text) or [block.text]
+            for idx_bq, sent in enumerate(sentences_bq):
+                clauses = _split_clauses(sent, comma_ms)
+                for c_idx, (clause_text, clause_pause) in enumerate(clauses):
+                    last_clause = c_idx == len(clauses) - 1
+                    chunks.append(
+                        Chunk(
+                            text=clause_text,
+                            kind="blockquote",
+                            pause_after_ms=p_para if last_clause else clause_pause,
+                        )
+                    )
 
         elif block.kind == "hr":
             chunks.append(Chunk(text="", kind="hr", pause_after_ms=p_hr))
