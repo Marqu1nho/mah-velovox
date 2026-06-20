@@ -174,3 +174,51 @@ def test_lazy_start_spawns_daemon(monkeypatch, tmp_path):
     # Popen should have been called.
     assert len(popen_calls) >= 1
     assert popen_calls[0].get("start_new_session") is True
+
+
+# ---------------------------------------------------------------------------
+# (d) the `send` Typer subcommands route to _send_to_daemon correctly
+# ---------------------------------------------------------------------------
+
+def _capture_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main_mod, "_send_to_daemon", lambda cmd, app: calls.append((cmd, app)) or 0
+    )
+    return calls
+
+
+def test_send_read_command_routes(monkeypatch):
+    from typer.testing import CliRunner
+
+    calls = _capture_calls(monkeypatch)
+    result = CliRunner().invoke(main_mod.app, ["send", "read"])
+    assert result.exit_code == 0
+    assert calls == [("read", None)]
+
+
+def test_send_read_command_passes_app(monkeypatch):
+    from typer.testing import CliRunner
+
+    calls = _capture_calls(monkeypatch)
+    result = CliRunner().invoke(main_mod.app, ["send", "read", "--app", "Safari"])
+    assert result.exit_code == 0
+    assert calls == [("read", "Safari")]
+
+
+def test_send_pause_command_routes(monkeypatch):
+    from typer.testing import CliRunner
+
+    calls = _capture_calls(monkeypatch)
+    result = CliRunner().invoke(main_mod.app, ["send", "pause"])
+    assert result.exit_code == 0
+    assert calls == [("pause", None)]
+
+
+def test_send_stop_command_routes(monkeypatch):
+    from typer.testing import CliRunner
+
+    calls = _capture_calls(monkeypatch)
+    result = CliRunner().invoke(main_mod.app, ["send", "stop"])
+    assert result.exit_code == 0
+    assert calls == [("stop", None)]

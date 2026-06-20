@@ -1,22 +1,29 @@
-"""readaloud CLI entry point.
+"""readaloud CLI entry point (Typer).
 
-Usage:
-    readaloud --stdin [--config PATH]
-    readaloud --window [--config PATH]      (text also arrives on stdin)
-    readaloud --print-config-json [--config PATH]
-    readaloud --print-script [--config PATH]   (read stdin, print speech script JSON)
+Commands:
+    readaloud daemon                       run the warm daemon
+    readaloud send read [--app NAME]       read stdin text via the daemon (blocks)
+    readaloud send pause                   toggle pause via the daemon
+    readaloud send stop                    stop via the daemon
+    readaloud speak [--window] [--app NAME] [--config PATH]
+                                           direct (non-daemon) playback from stdin
+    readaloud config [--config PATH]       print merged config as JSON
+    readaloud script [--app NAME] [--config PATH]
+                                           print speech-script JSON from stdin
+    readaloud --version
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
 import signal
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+import typer
 
 from . import __version__
 from .clean import clean
@@ -189,81 +196,25 @@ def _send_to_daemon(cmd: str, app: str | None) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="readaloud: %(message)s",
-        stream=sys.stderr,
-    )
+def _direct_speak(window: bool, app: str | None, config: str | None) -> int:
+    """Direct (non-daemon) playback from stdin: clean -> parse -> script -> engine.
 
-    parser = argparse.ArgumentParser(prog="readaloud", description=__doc__)
-    parser.add_argument("--stdin", action="store_true", help="read text from stdin")
-    parser.add_argument(
-        "--window",
-        action="store_true",
-        help="read window text from stdin (applies window_read.max_chars)",
-    )
-    parser.add_argument("--config", metavar="PATH", help="config file path override")
-    parser.add_argument(
-        "--print-config-json",
-        action="store_true",
-        help="print merged config as JSON and exit",
-    )
-    parser.add_argument(
-        "--print-script",
-        action="store_true",
-        help="run clean+parse+script on stdin and print chunks as JSON",
-    )
-    parser.add_argument("--version", action="version", version=f"readaloud {__version__}")
-    parser.add_argument("--app", metavar="NAME", help="frontmost app name, for per-app mute rules")
-    parser.add_argument("--daemon", action="store_true", help="run the warm kokoro daemon")
-    parser.add_argument(
-        "--send",
-        metavar="CMD",
-        choices=["read", "pause", "stop"],
-        help="send a command to the daemon (lazy-starts it); read takes stdin",
-    )
-    args = parser.parse_args(argv)
-
-    # Daemon + client paths run BEFORE load_config: the daemon loads config
-    # fresh per read, and the client never touches config (it just relays).
-    if args.daemon:
-        from .daemon import main as daemon_main
-
-        return daemon_main()
-
-    if args.send:
-        return _send_to_daemon(args.send, args.app)
-
+    Honors the single-instance pidfile guard and installs signal handlers
+    (SIGTERM/INT/HUP -> stop, SIGUSR1 -> toggle_pause).
+    """
     try:
-        cfg = load_config(args.config)
+        cfg = load_config(config)
     except ConfigError as exc:
         print(f"readaloud: config error: {exc}", file=sys.stderr)
         return 2
 
-    if args.print_config_json:
-        json.dump(cfg, sys.stdout, indent=2, sort_keys=False)
-        sys.stdout.write("\n")
-        return 0
-
     raw = _read_stdin()
-
-    if args.print_script:
-        cleaned = clean(raw, cfg, app=args.app)
-        chunks = build_script(parse(cleaned, cfg), cfg)
-        json.dump([c.to_dict() for c in chunks], sys.stdout, indent=2)
-        sys.stdout.write("\n")
-        return 0
-
-    if not (args.stdin or args.window):
-        parser.error("one of --stdin, --window, --print-config-json, --print-script is required")
-
-    if args.window:
+    if window:
         raw = _window_truncate(raw, cfg)
     else:
         raw = _truncate(raw, cfg)
 
-    cleaned = clean(raw, cfg, app=args.app)
+    cleaned = clean(raw, cfg, app=app)
     chunks = build_script(parse(cleaned, cfg), cfg)
     if not chunks:
         return 0
@@ -304,6 +255,151 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         _release_single_instance()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Typer app
+# ---------------------------------------------------------------------------
+
+app = typer.Typer(
+    help="Hotkey-triggered, markdown-aware text-to-speech reader for macOS.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+
+send_app = typer.Typer(help="Relay a command to the warm daemon (lazy-starts it).")
+app.add_typer(send_app, name="send")
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"readaloud {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """readaloud — markdown-aware text-to-speech."""
+
+
+@app.command()
+def daemon() -> None:
+    """Run the warm kokoro daemon."""
+    from .daemon import main as daemon_main
+
+    raise typer.Exit(code=daemon_main())
+
+
+@send_app.command("read")
+def send_read(
+    app: Optional[str] = typer.Option(  # noqa: A002 - matches existing --app flag
+        None, "--app", metavar="NAME", help="Frontmost app name, for per-app mute rules."
+    ),
+) -> None:
+    """Read stdin text via the daemon; block until playback is done."""
+    raise typer.Exit(code=_send_to_daemon("read", app))
+
+
+@send_app.command("pause")
+def send_pause() -> None:
+    """Toggle pause via the daemon."""
+    raise typer.Exit(code=_send_to_daemon("pause", None))
+
+
+@send_app.command("stop")
+def send_stop() -> None:
+    """Stop playback via the daemon."""
+    raise typer.Exit(code=_send_to_daemon("stop", None))
+
+
+@app.command()
+def speak(
+    window: bool = typer.Option(
+        False, "--window", help="Apply window_read.max_chars instead of max_selection_chars."
+    ),
+    app: Optional[str] = typer.Option(  # noqa: A002 - matches existing --app flag
+        None, "--app", metavar="NAME", help="Frontmost app name, for per-app mute rules."
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", metavar="PATH", help="Config file path override."
+    ),
+) -> None:
+    """Direct (non-daemon) playback from stdin."""
+    raise typer.Exit(code=_direct_speak(window, app, config))
+
+
+@app.command()
+def config(  # noqa: A001 - command name is part of the contract
+    config: Optional[str] = typer.Option(
+        None, "--config", metavar="PATH", help="Config file path override."
+    ),
+) -> None:
+    """Print the merged config as JSON."""
+    try:
+        cfg = load_config(config)
+    except ConfigError as exc:
+        print(f"readaloud: config error: {exc}", file=sys.stderr)
+        raise typer.Exit(code=2)
+    json.dump(cfg, sys.stdout, indent=2, sort_keys=False)
+    sys.stdout.write("\n")
+
+
+@app.command()
+def script(
+    app: Optional[str] = typer.Option(  # noqa: A002 - matches existing --app flag
+        None, "--app", metavar="NAME", help="Frontmost app name, for per-app mute rules."
+    ),
+    config: Optional[str] = typer.Option(
+        None, "--config", metavar="PATH", help="Config file path override."
+    ),
+) -> None:
+    """Run clean+parse+script on stdin and print the chunks as JSON."""
+    try:
+        cfg = load_config(config)
+    except ConfigError as exc:
+        print(f"readaloud: config error: {exc}", file=sys.stderr)
+        raise typer.Exit(code=2)
+    raw = _read_stdin()
+    cleaned = clean(raw, cfg, app=app)
+    chunks = build_script(parse(cleaned, cfg), cfg)
+    json.dump([c.to_dict() for c in chunks], sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Console-script entry point. Returns a process exit code.
+
+    Kept callable with an ``argv`` list so tests can drive the CLI directly.
+    Typer/Click raise SystemExit; we translate that back into a return code so
+    callers that expect an int (and the ``[project.scripts]`` entry) both work.
+    """
+    # Typer vendors Click as ``typer._click`` (no top-level ``click`` dep).
+    from typer import _click as click
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="readaloud: %(message)s",
+        stream=sys.stderr,
+    )
+    try:
+        app(args=argv, standalone_mode=False)
+    except click.exceptions.UsageError as exc:  # bad/missing args, no subcommand
+        exc.show()
+        return exc.exit_code if exc.exit_code is not None else 2
+    except typer.Exit as exc:
+        return exc.exit_code
+    except SystemExit as exc:  # --help (exit 0) and other Click SystemExits
+        code = exc.code
+        return code if isinstance(code, int) else (0 if code is None else 1)
     return 0
 
 
