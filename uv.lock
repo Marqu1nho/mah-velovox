@@ -406,7 +406,7 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "sounddevice" },
     { name = "soundfile" },
-    { name = "typer" },
+    { name = "typer", specifier = ">=0.26.7" },
 ]
 
 [package.metadata.requires-dev]
