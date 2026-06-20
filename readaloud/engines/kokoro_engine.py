@@ -143,6 +143,7 @@ class KokoroEngine:
         self._kokoro = model
         self._stream = None
         self._stream_lock = threading.Lock()
+        self._finished = threading.Event()
 
     def _ensure_model(self):
         if self._kokoro is None:
@@ -154,10 +155,29 @@ class KokoroEngine:
 
         self._paused = False
         self._resume.set()
+        self._finished.clear()
         kokoro = self._ensure_model()
         # Split the first chunk into a small head + remainder so the first
         # synth completes quickly and playback starts sooner (time-to-first-word).
         chunks = _split_first_chunk(chunks)
+        # Force PortAudio to re-enumerate audio devices. The daemon is a
+        # long-lived process; PortAudio snapshots the device list at
+        # Pa_Initialize() time and caches it for the process lifetime. If the
+        # user changes their output device (headphones, Bluetooth, sleep/wake)
+        # after the daemon started, the cached device entry goes stale and
+        # sd.OutputStream() fails with "Internal PortAudio error". Calling
+        # _terminate()/_initialize() here flushes that cache so the next
+        # OutputStream() sees the current default device. This is safe because
+        # the daemon serializes playback: it calls wait_finished() to confirm
+        # any prior stream is fully closed before reaching this point.
+        try:
+            sd._terminate()
+        except Exception:
+            pass  # not yet initialized on the very first call — that's fine
+        try:
+            sd._initialize()
+        except Exception as exc:
+            log.warning("PortAudio re-initialize failed: %s; continuing", exc)
         audio_q: queue.Queue = queue.Queue(maxsize=4)
 
         def producer() -> None:
@@ -245,6 +265,7 @@ class KokoroEngine:
             except queue.Empty:
                 pass
             prod.join(timeout=1.0)
+            self._finished.set()
 
     def toggle_pause(self) -> None:
         """Best-effort pause/resume of playback (the audio stream).
@@ -287,6 +308,14 @@ class KokoroEngine:
                 stream.abort()  # immediate: drop in-flight audio, don't drain
             except Exception:
                 pass
+
+    def wait_finished(self, timeout: float | None = None) -> bool:
+        """Block until the current speak() has fully torn down its audio stream.
+
+        Returns True if finished, False on timeout. Used by the daemon to make
+        preemption synchronous before it re-initializes PortAudio for the next
+        read."""
+        return self._finished.wait(timeout)
 
     def synth_to_wav(self, chunks: list[Chunk], out_path: str) -> int:
         """Synthesize all chunks to a wav file (no audio device).

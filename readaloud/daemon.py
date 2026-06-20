@@ -148,6 +148,19 @@ class Daemon:
                     if old is not None:
                         old.stop()
                         self._current = None
+                # Wait (outside the lock) for the preempted playback to fully
+                # tear down its audio stream before we start the next read.
+                # The next read re-initializes PortAudio to refresh the device
+                # list, which is only safe when no other stream is open.
+                # Bounded timeout so a wedged old playback can't hang us.
+                if old is not None:
+                    try:
+                        if not old.wait_finished(timeout=2.0):
+                            log.warning(
+                                "preempted playback did not finish within 2s; continuing"
+                            )
+                    except Exception:
+                        pass
 
                 # 2. Fresh config per read.
                 from .config import load_config
