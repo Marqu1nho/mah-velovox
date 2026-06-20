@@ -4,6 +4,10 @@ Commands:
     speakwrite config [--config PATH]              print merged config as JSON
     speakwrite stream [--config PATH] [--engine NAME]
                                                    stream from engine (mock only)
+    speakwrite daemon                              run the warm parakeet daemon
+    speakwrite send dictate                        stream STT via the daemon (blocks)
+    speakwrite send stop                           stop the current dictation session
+    speakwrite send ping                           ping the daemon
     speakwrite --version
 """
 
@@ -11,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import signal
 import sys
@@ -27,6 +32,92 @@ from .protocol import encode_done, encode_final, encode_partial
 
 
 # ---------------------------------------------------------------------------
+# Daemon client helpers
+# ---------------------------------------------------------------------------
+
+def _send_to_daemon(cmd: str) -> int:
+    """Relay a command to the warm daemon over its unix socket.
+
+    Lazy-starts the daemon (detached) if it isn't running, then issues the
+    command.  ``dictate`` BLOCKS until the daemon reports done (streaming
+    each line verbatim to stdout so the lua side can read them).
+    ``stop``/``ping`` send and return immediately on ack.
+    """
+    import socket as _socket
+    import subprocess
+    import time
+
+    from . import daemon as _daemon
+
+    sock_path = str(_daemon.socket_path())
+
+    def _connect() -> "_socket.socket":
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.connect(sock_path)
+        return s
+
+    # Connect; if the socket is not yet listening, lazy-start the daemon
+    # detached and poll until the socket accepts (generous 15s deadline for
+    # model load + MLX warmup which can take several seconds).
+    try:
+        s = _connect()
+    except OSError:
+        logpath = _daemon.daemon_log_path()
+        logpath.parent.mkdir(parents=True, exist_ok=True)
+        logf = open(logpath, "ab")  # noqa: SIM115 (handed to the child)
+        subprocess.Popen(
+            [sys.executable, "-m", "speakwrite.daemon"],
+            stdout=logf,
+            stderr=logf,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 15.0  # model load + warmup; generous headroom
+        s = None
+        while time.monotonic() < deadline:
+            try:
+                s = _connect()
+                break
+            except OSError:
+                time.sleep(0.1)
+        if s is None:
+            print("speakwrite: daemon did not become ready", file=sys.stderr)
+            return 3
+
+    try:
+        if cmd == "dictate":
+            s.sendall((json.dumps({"cmd": "dictate"}) + "\n").encode())
+            rf = s.makefile("rb")
+            while True:  # block until done / connection closed
+                line = rf.readline()
+                if not line:
+                    break
+                # Relay each line verbatim to stdout (lua reads these as streaming stdout).
+                decoded = line.decode("utf-8", errors="replace")
+                sys.stdout.write(decoded)
+                sys.stdout.flush()
+                try:
+                    msg = json.loads(decoded.strip())
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("event") == "done":
+                    break
+        else:  # stop | ping
+            s.sendall((json.dumps({"cmd": cmd}) + "\n").encode())
+            ack_line = s.makefile("rb").readline()
+            if ack_line:
+                decoded = ack_line.decode("utf-8", errors="replace")
+                sys.stdout.write(decoded)
+                sys.stdout.flush()
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Typer app
 # ---------------------------------------------------------------------------
 
@@ -35,6 +126,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+send_app = typer.Typer(help="Relay a command to the warm daemon (lazy-starts it).")
+app.add_typer(send_app, name="send")
 
 
 def _version_callback(value: bool) -> None:
@@ -54,6 +148,32 @@ def _root(
     ),
 ) -> None:
     """speakwrite — mic → streaming speech-to-text → paste at cursor."""
+
+
+@app.command()
+def daemon() -> None:
+    """Run the warm parakeet daemon."""
+    from .daemon import main as daemon_main
+
+    raise typer.Exit(code=daemon_main())
+
+
+@send_app.command("dictate")
+def send_dictate() -> None:
+    """Start a dictation session via the daemon; block until done."""
+    raise typer.Exit(code=_send_to_daemon("dictate"))
+
+
+@send_app.command("stop")
+def send_stop() -> None:
+    """Stop the current dictation session via the daemon."""
+    raise typer.Exit(code=_send_to_daemon("stop"))
+
+
+@send_app.command("ping")
+def send_ping() -> None:
+    """Ping the daemon."""
+    raise typer.Exit(code=_send_to_daemon("ping"))
 
 
 @app.command()
@@ -211,6 +331,10 @@ def main(argv: list[str] | None = None) -> int:
         format="speakwrite: %(message)s",
         stream=sys.stderr,
     )
+    # Suppress noisy third-party logs that leak during model load.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
     try:
         result = app(args=argv, standalone_mode=False)
     except click.exceptions.UsageError as exc:  # bad/missing args, no subcommand
