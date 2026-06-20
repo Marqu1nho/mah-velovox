@@ -194,10 +194,15 @@ class Daemon:
                 if self._injected_engine is not None:
                     engine = self._injected_engine
                 else:
-                    from .engines.parakeet import ParakeetEngine
                     from .config import load_config as _lc
                     cfg = _lc()
-                    engine = ParakeetEngine(cfg, model=self.model)
+                    if cfg.get("engine") == "mock":
+                        from .engines.mock import MockEngine
+                        engine = MockEngine()
+                    else:
+                        # Parakeet: reuse the warm model loaded on this thread.
+                        from .engines.parakeet import ParakeetEngine
+                        engine = ParakeetEngine(cfg, model=self.model)
 
                 from .polish import polish
                 from .config import load_config as _lc2

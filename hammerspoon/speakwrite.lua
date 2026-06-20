@@ -155,6 +155,7 @@ end
 -- ---------------------------------------------------------------------------
 local hud        = nil   -- the persistent hs.canvas
 local hudTextIdx = 2     -- index of the text element inside hud (see buildHud)
+local hudTextFrame = nil -- stable text-element frame (set in buildHud; do NOT read back from the canvas)
 local hudLinger  = nil   -- hs.timer for the post-done linger
 
 -- Build (or rebuild) the HUD canvas. Called once on the first dictation start.
@@ -227,10 +228,11 @@ local function buildHud()
     color      = { white = 1.0, alpha = opacity },
     paragraphStyle = { lineBreak = "wordWrap" },
   })
+  hudTextFrame = { x = padX, y = padY, w = hudW - padX * 2, h = textH }
   c[2] = {
     type  = "text",
     text  = initStyled,
-    frame = { x = padX, y = padY, w = hudW - padX * 2, h = textH },
+    frame = hudTextFrame,
   }
 
   -- Glass / non-focusable / click-through:
@@ -259,8 +261,10 @@ local function hudSetText(fullText)
   local opacity  = tonumber(cfgGet("hud.opacity", 0.92)) or 0.92
   local lines    = tonumber(cfgGet("hud.lines", 6)) or 6
 
-  -- Retrieve stored inner width from the text frame (set by buildHud).
-  local innerW = hud[hudTextIdx] and hud[hudTextIdx].frame and hud[hudTextIdx].frame.w or 300
+  -- Use the STABLE stored frame (never read it back from the canvas element —
+  -- that readback was fragile across repeated reassignment and could error,
+  -- aborting the stream drain and wedging the HUD).
+  local innerW = (hudTextFrame and hudTextFrame.w) or 300
 
   -- Estimate average char width at this font size (roughly 0.5× em for the
   -- system UI font at normal weight).
@@ -299,7 +303,7 @@ local function hudSetText(fullText)
   hud[hudTextIdx] = {
     type  = "text",
     text  = styled,
-    frame = hud[hudTextIdx].frame,
+    frame = hudTextFrame,
   }
 end
 
@@ -423,6 +427,7 @@ local function handleJsonLine(line)
 
   elseif obj.volatile == true and obj.text then
     -- Rolling partial transcript — update HUD but don't stash as final.
+    dlog("partial: %d chars -> hudSetText", #obj.text)
     hudSetText(obj.text)
 
   elseif obj.text and not obj.event then
@@ -431,10 +436,19 @@ local function handleJsonLine(line)
   end
 end
 
+-- Safe wrapper: a single malformed line or render error must NEVER abort the
+-- stream drain — doing so would skip {done} → onDictationDone and wedge the HUD
+-- (exactly the bug that required a Hammerspoon reload to clear).
+local function safeHandleJsonLine(line)
+  local ok, err = pcall(handleJsonLine, line)
+  if not ok then dlog("handleJsonLine error: %s", tostring(err)) end
+end
+
 -- Streaming callback: returns true to keep stdout flowing.
 -- A single chunk may contain zero, one, or multiple newlines.
 local function onStreamChunk(_task, stdOut, _stdErr)
   if stdOut and #stdOut > 0 then
+    dlog("onStreamChunk: %d bytes received", #stdOut)
     lineBuf = lineBuf .. stdOut
     -- Drain complete lines.
     while true do
@@ -444,27 +458,40 @@ local function onStreamChunk(_task, stdOut, _stdErr)
       lineBuf = string.sub(lineBuf, nl + 1)
       -- Trim Windows \r if present.
       line = line:gsub("\r$", "")
-      handleJsonLine(line)
+      safeHandleJsonLine(line)
     end
   end
   return true  -- MUST return true to keep streaming
 end
 
 -- Exit callback: fires when the process exits (either naturally or via terminate).
-local function onStreamExit(exitCode, _stdOut, stdErr)
-  dlog("stream exited code=%s stderr=%s", tostring(exitCode), (stdErr or ""):sub(1, 400))
+local function onStreamExit(exitCode, stdOut, stdErr)
+  dlog("stream exited code=%s stdOutBytes=%d stderr=%s",
+    tostring(exitCode), stdOut and #stdOut or 0, (stdErr or ""):sub(1, 200))
 
-  -- Drain any remaining partial line in the buffer (SIGTERM race).
-  if lineBuf and #lineBuf > 0 then
-    handleJsonLine(lineBuf)
+  -- CRITICAL: hs.task delivers the FINAL batch of output to this termination
+  -- callback's stdOut argument rather than the streaming callback when the
+  -- process exits (esp. a fast-exiting one). Append it and drain ALL complete
+  -- lines — otherwise the tail (later partials + {final} + {done}) is lost,
+  -- which is exactly the "no text in HUD / finalText=nil" bug.
+  if stdOut and #stdOut > 0 then
+    lineBuf = lineBuf .. stdOut
+  end
+  while true do
+    local nl = string.find(lineBuf, "\n", 1, true)
+    if not nl then break end
+    local line = string.sub(lineBuf, 1, nl - 1)
+    lineBuf = string.sub(lineBuf, nl + 1)
+    line = line:gsub("\r$", "")
+    safeHandleJsonLine(line)
+  end
+  if #lineBuf > 0 then
+    safeHandleJsonLine(lineBuf)
     lineBuf = ""
   end
 
-  -- If {event="done"} already fired, onDictationDone has been called and
-  -- isDictating/stopping are already false. Only finalize here if we're
-  -- still mid-session (covers the old standalone `stream` path where SIGTERM
-  -- causes the CLI to emit final+done before exiting, and the watchdog fallback
-  -- path where we forced terminate).
+  -- handleJsonLine({done}) already called onDictationDone (clearing the flags).
+  -- Only finalize here if we somehow still think we're mid-session.
   if isDictating or stopping then
     dlog("stream exit without done event — finalizing with latest text")
     onDictationDone()
@@ -551,6 +578,9 @@ local function onDictateHotkey()
     startDictation()
   end
 end
+
+-- Debug hook: trigger the toggle from the hs CLI (hs -c "require('speakwrite').testToggle()").
+M.testToggle = onDictateHotkey
 
 -- ---------------------------------------------------------------------------
 -- Setup.
