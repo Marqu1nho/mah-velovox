@@ -16,6 +16,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,8 @@ class KokoroEngine:
         rewind_ms = self.cfg.get("playback", {}).get("resume_rewind_ms", 600)
         rewind_frames = int(rewind_ms / 1000 * SAMPLE_RATE)
         recent = np.zeros(0, dtype=np.float32)
+        _t0 = time.monotonic()
+        _logged_first = False
         try:
             while not self._stop.is_set():
                 try:
@@ -217,6 +220,9 @@ class KokoroEngine:
                         stream.write(wave[start : start + block])
                     except Exception:
                         break  # stream aborted by stop()
+                    if not _logged_first:
+                        _logged_first = True
+                        log.info("readaloud.kokoro: first audio in %.2fs", time.monotonic() - _t0)
                     written_block = wave[start : start + block].reshape(-1)
                     if rewind_frames > 0:
                         recent = np.concatenate([recent, written_block])
