@@ -126,6 +126,10 @@ class ParakeetEngine:
         """
         import mlx.core as mx  # type: ignore[import]
 
+        # NOTE: MLX binds a model to the thread that loaded it — add_audio fails
+        # with "There is no Stream(gpu, 0) in current thread" if called from a
+        # different thread. The daemon therefore loads the model and runs
+        # stream() on ONE dedicated inference thread (see daemon.py).
         model = self._ensure_model()
         self._final_text = ""
         buffer: list[np.ndarray] = []
