@@ -109,6 +109,86 @@ def _window_truncate(text: str, cfg: dict[str, Any]) -> str:
     return text
 
 
+def _send_to_daemon(cmd: str, app: str | None) -> int:
+    """Relay a command to the warm daemon over its unix socket.
+
+    Lazy-starts the daemon (detached) if it isn't running, then issues the
+    command. ``read`` reads text from stdin and BLOCKS until the daemon reports
+    playback done (so the caller's process lifetime ~= playback duration, which
+    Hammerspoon relies on to know when to dismiss the transport pill).
+    ``pause``/``stop`` send and return immediately on ack.
+    """
+    import socket as _socket
+    import subprocess
+    import time
+
+    from . import daemon as _daemon
+
+    sock_path = str(_daemon.socket_path())
+
+    def _connect() -> "_socket.socket":
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.connect(sock_path)
+        return s
+
+    # Connect; a successful connect means the daemon has bound its socket (it
+    # binds before loading the model and serves the request once its accept loop
+    # starts, so no separate readiness ping is needed). If connect fails, the
+    # daemon isn't running — lazy-start it detached and poll connect() until the
+    # socket is accepting, or time out.
+    try:
+        s = _connect()
+    except OSError:
+        logpath = _daemon.daemon_log_path()
+        logpath.parent.mkdir(parents=True, exist_ok=True)
+        logf = open(logpath, "ab")  # noqa: SIM115 (handed to the child)
+        subprocess.Popen(
+            [sys.executable, "-m", "readaloud.daemon"],
+            stdout=logf,
+            stderr=logf,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 12.0  # model load ~1s; generous headroom
+        s = None
+        while time.monotonic() < deadline:
+            try:
+                s = _connect()
+                break
+            except OSError:
+                time.sleep(0.1)
+        if s is None:
+            print("readaloud: daemon did not become ready", file=sys.stderr)
+            return 3
+    # Send via sendall (raw socket write); read the daemon's replies via a
+    # makefile read buffer. The daemon's _handle reads our line and writes
+    # back newline-delimited JSON.
+    try:
+        if cmd == "read":
+            req = {"cmd": "read", "text": _read_stdin(), "app": app}
+            s.sendall((json.dumps(req) + "\n").encode())
+            rf = s.makefile("rb")
+            while True:  # block until playback done / connection closed
+                line = rf.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line.decode("utf-8", errors="replace").strip())
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("event") == "done":
+                    break
+        else:  # pause | stop
+            s.sendall((json.dumps({"cmd": cmd}) + "\n").encode())
+            s.makefile("rb").readline()  # await ack
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -136,7 +216,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"readaloud {__version__}")
     parser.add_argument("--app", metavar="NAME", help="frontmost app name, for per-app mute rules")
+    parser.add_argument("--daemon", action="store_true", help="run the warm kokoro daemon")
+    parser.add_argument(
+        "--send",
+        metavar="CMD",
+        choices=["read", "pause", "stop"],
+        help="send a command to the daemon (lazy-starts it); read takes stdin",
+    )
     args = parser.parse_args(argv)
+
+    # Daemon + client paths run BEFORE load_config: the daemon loads config
+    # fresh per read, and the client never touches config (it just relays).
+    if args.daemon:
+        from .daemon import main as daemon_main
+
+        return daemon_main()
+
+    if args.send:
+        return _send_to_daemon(args.send, args.app)
 
     try:
         cfg = load_config(args.config)

@@ -84,7 +84,9 @@ def _synth_chunk(kokoro, chunk: Chunk, voice: str, base_speed: float) -> np.ndar
 
 
 class KokoroEngine:
-    def __init__(self, cfg: dict[str, Any]):
+    def __init__(self, cfg: dict[str, Any], model=None):
+        # ``model`` lets the daemon inject a pre-loaded (warm) Kokoro instance so
+        # it isn't reloaded from disk per read; None falls back to lazy load.
         self.cfg = cfg
         voice_cfg = cfg.get("voice", {})
         self.voice = voice_cfg.get("kokoro_voice", "af_heart")
@@ -96,7 +98,7 @@ class KokoroEngine:
         self._resume = threading.Event()
         self._resume.set()
         self._paused = False
-        self._kokoro = None
+        self._kokoro = model
         self._stream = None
         self._stream_lock = threading.Lock()
 
