@@ -21,13 +21,13 @@ else
 end
 
 -- ---------------------------------------------------------------------------
--- Config (read once at load by shelling out to the CLI's --print-config-json).
+-- Config (read once at load by shelling out to the CLI's `config` subcommand).
 -- ---------------------------------------------------------------------------
 local config = nil
 
 local function loadConfig()
   if not CLI then return nil end
-  local out, ok = hs.execute(string.format("%q --print-config-json", CLI), true)
+  local out, ok = hs.execute(string.format("%q config", CLI), true)
   if ok and out and #out > 0 then
     local decoded = hs.json.decode(out)
     if decoded then return decoded end
@@ -151,9 +151,9 @@ local function hideTransport()
 end
 
 -- togglePauseLive: shared function used by BOTH the hotkey path and the
--- left-zone click.  Guards that a live readerTask exists, sends SIGUSR1,
--- flips the module `paused` bool, and redraws the transport pill.
--- Forward-declared here; body assigned after stopReader so it can't
+-- left-zone click.  Spawns `<CLI> send pause` (the daemon toggles pause on its
+-- current read), flips the module `paused` bool, and redraws the transport
+-- pill.  Forward-declared here; body assigned after stopReader so it can't
 -- accidentally reference it.
 local togglePauseLive
 -- stopReader is defined later (needs readerTask helpers), but showTransport's
@@ -281,56 +281,32 @@ local function isRunning()
   return readerTask ~= nil and readerTask:isRunning()
 end
 
--- A reader we no longer hold a task handle for (e.g. it survived a
--- Hammerspoon reload). Identified via the CLI's single-instance pidfile.
-local PIDFILE = os.getenv("HOME") .. "/.local/state/readaloud/readaloud.pid"
-
-local function orphanReaderPid()
-  local fh = io.open(PIDFILE, "r")
-  if not fh then return nil end
-  local pid = tonumber((fh:read("a") or ""):match("%d+"))
-  fh:close()
-  if pid and os.execute(string.format("/bin/kill -0 %d 2>/dev/null", pid)) then
-    return pid
-  end
-  return nil
-end
-
-local function stopOrphanReader()
-  local pid = orphanReaderPid()
-  if pid then
-    os.execute(string.format("/bin/kill -TERM %d 2>/dev/null", pid))
-    dlog("stopped orphaned reader pid=%d", pid)
-    return true
-  end
-  return false
-end
-
 stopReader = function()
-  if readerTask then
-    -- terminate() sends SIGTERM to the CLI; its signal handler stops the
-    -- engine, which in turn SIGTERMs any child `say` process and aborts the
-    -- queue (kokoro stops its stream). As a belt-and-suspenders measure, also
-    -- try to signal the process group in case a child outlives the CLI.
-    local pid = readerTask:pid()
-    readerTask:terminate()
-    if pid and pid > 0 then
-      hs.execute(string.format("/bin/kill -TERM -%d 2>/dev/null || true", pid))
-    end
-    readerTask = nil
+  -- Tell the DAEMON to stop its current read. Terminating the relay client
+  -- (readerTask) alone would NOT stop the daemon's playback, so we spawn a
+  -- quick `<CLI> send stop`. The daemon reports the read done, which causes
+  -- the still-running read-client to exit and fire its exit callback (hiding
+  -- the pill). We also nil out the handle here so isRunning() reads false.
+  if CLI then
+    hs.task.new(CLI, function(exitCode, _stdOut, stdErr)
+      dlog("send stop exited code=%s stderr=%s", tostring(exitCode), (stdErr or ""):sub(1, 200))
+    end, { "send", "stop" }):start()
   end
+  readerTask = nil
 end
 
 -- togglePauseLive: body assigned here, after stopReader is visible.
 -- Called by BOTH the hotkey path AND the left-zone transport click.
 togglePauseLive = function()
   if not isRunning() then return end
-  local pid = readerTask:pid()
-  if not pid or pid <= 0 then return end
-  hs.execute(string.format("/bin/kill -USR1 %d 2>/dev/null || true", pid))
+  if CLI then
+    hs.task.new(CLI, function(exitCode, _stdOut, stdErr)
+      dlog("send pause exited code=%s stderr=%s", tostring(exitCode), (stdErr or ""):sub(1, 200))
+    end, { "send", "pause" }):start()
+  end
   paused = not paused
   showTransport()
-  dlog("toggle pause -> %s (pid=%d)", paused and "paused" or "reading", pid)
+  dlog("toggle pause -> %s", paused and "paused" or "reading")
 end
 
 -- Forward-declared so startOrTogglePause (above its definition) can call it.
@@ -338,18 +314,11 @@ local startReader
 
 -- Start reading if idle, else toggle pause/resume on the live reader. The
 -- toggle NEVER stops — stop is reserved for clicking the transport right zone.
+-- The daemon is the single source of truth: a fresh `send read` PREEMPTS any
+-- stale playback, so there's no orphan-reader bookkeeping to do here.
 local function startOrTogglePause(captureFn, mode)
   if isRunning() then
     togglePauseLive()
-    return
-  end
-  if orphanReaderPid() then
-    -- Orphan reader (post-reload): no handle to sync pause state, so the safe
-    -- fallback is to stop it outright.
-    stopOrphanReader()
-    paused = false
-    hideTransport()
-    alert("■ stopped")
     return
   end
   local text = captureFn()
@@ -366,8 +335,11 @@ function startReader(text, mode)
     alert("readaloud: nothing to read")
     return
   end
-  local arg = (mode == "window") and "--window" or "--stdin"
-  local args = { arg }
+  -- Both selection and window modes relay the captured text the same way: pipe
+  -- it on stdin to `<CLI> send read`, which relays to the daemon and BLOCKS
+  -- until playback finishes/stops. (Window text is already capped by the
+  -- caller via window_read.max_chars.) `--app` carries the frontmost app name.
+  local args = { "send", "read" }
   local frontApp = hs.application.frontmostApplication()
   if frontApp and frontApp:name() then
     table.insert(args, "--app")
