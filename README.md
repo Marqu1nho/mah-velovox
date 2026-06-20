@@ -309,6 +309,28 @@ mute:
   blocks: []   # block-drop rules (start-line match → drop until next blank)
 
 # ---------------------------------------------------------------------------
+# Spoken substitutions
+# ---------------------------------------------------------------------------
+# Map literal strings in the source text to how they should be read aloud.
+# Applied after mute rules, before any other line processing.
+#
+# - Literal substring replacement (not regex); case-sensitive.
+# - Longest key wins: keys are applied longest-first so a longer pattern
+#   (e.g. "->") is never shadowed by a shorter one it contains (e.g. "-").
+# - Token padding: each replacement is automatically surrounded by spaces so
+#   a glyph adjacent to text (e.g. "A→B") reads as "A to B" not "AtoB".
+#   Redundant spaces are collapsed; newlines are never touched.
+# - Empty map (the default) = feature off, zero overhead.
+#
+# Example:
+#   replace:
+#     "→": to
+#     "≈": approximately
+#     "w/": with
+#     "e.g.": for example
+replace: {}
+
+# ---------------------------------------------------------------------------
 # Playback
 # ---------------------------------------------------------------------------
 playback:
@@ -417,6 +439,25 @@ mute:
 
 To find an app's name, check the `app=` field in
 `~/.local/state/readaloud/hammerspoon.log`.
+
+#### `replace`
+
+Map literal strings to how they should be read aloud. Useful for symbols and
+abbreviations that a TTS engine would mispronounce:
+
+```yaml
+replace:
+  "→": to
+  "≈": approximately
+  "w/": with
+  "e.g.": for example
+```
+
+Substitution is **literal** (not regex) and **case-sensitive**. When two keys
+overlap (e.g. `"->"` and `"-"`), the longer key wins because keys are applied
+longest-first. Each replacement is padded with spaces automatically, so `A→B`
+becomes `A to B` rather than `AtoB`; excess spaces are collapsed. Newlines are
+never affected. The empty default (`{}`) means the feature is off.
 
 #### `playback`
 

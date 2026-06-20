@@ -356,6 +356,44 @@ def apply_mute(text: str, rules: list[str]) -> str:
     return "\n".join(out_lines)
 
 
+def _apply_replace(text: str, replace: dict[str, str]) -> str:
+    """Apply literal spoken substitutions from the ``replace`` config map.
+
+    Keys are sorted longest-first so that a longer pattern (e.g. "->") is
+    matched before any shorter one it contains (e.g. "-"), preventing partial
+    clobbers.  Each replacement is padded with spaces so that a glyph sitting
+    flush against adjacent text (e.g. ``A→B``) becomes a separate spoken
+    token.  Runs of horizontal whitespace (spaces/tabs) within each line are
+    then collapsed to a single space and trailing horizontal whitespace is
+    trimmed, but newlines are never touched — line/paragraph structure is
+    preserved because the parser downstream relies on it.
+
+    This is literal-only (no regex).  A regex variant may be added in a
+    future extension.
+
+    No-op when ``replace`` is empty (the common case).
+    """
+    if not replace:
+        return text
+
+    # Sort keys longest-first to prevent shorter keys from clobbering longer
+    # ones that share a prefix.
+    keys_desc = sorted(replace, key=len, reverse=True)
+
+    for key in keys_desc:
+        value = replace[key]
+        # Pad value with spaces so glyphs flush against adjacent characters
+        # become separate tokens (e.g. "A→B" → "A to B" not "AtoB").
+        padded = f" {value} "
+        text = text.replace(key, padded)
+
+    # Collapse horizontal whitespace runs (spaces/tabs) per line while
+    # preserving newlines.  Also trim trailing horizontal whitespace per line.
+    lines = text.split("\n")
+    lines = [_MULTISPACE.sub(" ", ln).rstrip() for ln in lines]
+    return "\n".join(lines)
+
+
 def clean(text: str, cfg: dict[str, Any], app: str | None = None) -> str:
     """Full cleaning pipeline. Returns cleaned text with blank-line block
     structure preserved (so the parser can still see paragraph boundaries).
@@ -386,6 +424,14 @@ def clean(text: str, cfg: dict[str, Any], app: str | None = None) -> str:
         mute_rules.extend(mute_cfg.get("by_app", {}).get(app, []))
     if mute_rules:
         text = apply_mute(text, mute_rules)
+
+    # Apply spoken substitutions after mute rules so that mute patterns
+    # (which often match TUI chrome verbatim) are never defeated by a prior
+    # replace transform.  Replacements operate on the surviving visible text
+    # before any line-level scrubbing begins.
+    replace_map: dict[str, str] = cfg.get("replace", {})
+    if replace_map:
+        text = _apply_replace(text, replace_map)
 
     raw_lines = text.split("\n")
 

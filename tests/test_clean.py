@@ -145,3 +145,70 @@ def test_clean_strips_prompt_markers():
     out = clean(text, DEFAULTS)
     assert "❯" not in out
     assert "run the command" in out
+
+
+# ---------------------------------------------------------------------------
+# replace — spoken substitutions
+# ---------------------------------------------------------------------------
+
+def _replace_cfg(replace_map: dict) -> dict:
+    """Return a config with the given replace map, everything else at defaults."""
+    c = copy.deepcopy(DEFAULTS)
+    c["replace"] = replace_map
+    return c
+
+
+def test_replace_single_char_with_surrounding_spaces():
+    """A glyph already padded by spaces is correctly substituted."""
+    text = "A → B"
+    out = clean(text, _replace_cfg({"→": "to"}))
+    assert "A to B" in out
+
+
+def test_replace_single_char_no_surrounding_spaces():
+    """A glyph flush against adjacent text (A→B) reads as separate tokens."""
+    text = "A→B"
+    out = clean(text, _replace_cfg({"→": "to"}))
+    assert "AtoB" not in out
+    assert "A to B" in out
+
+
+def test_replace_multi_char_key():
+    """A multi-character abbreviation key is replaced correctly."""
+    text = "come w/ me"
+    out = clean(text, _replace_cfg({"w/": "with"}))
+    assert "w/" not in out
+    assert "with" in out
+
+
+def test_replace_longest_key_first():
+    """When two keys overlap, the longer key takes precedence."""
+    # If "−>" were applied before "−", the "−" in "−>" would be clobbered first,
+    # leaving ">foo" instead of "arrow foo".
+    text = "x −> y"
+    out = clean(text, _replace_cfg({"−>": "arrow", "−": "minus"}))
+    assert "arrow" in out
+    assert "minus" not in out
+
+
+def test_replace_newlines_preserved():
+    """Substitutions must not collapse or remove newlines."""
+    text = "line one → end\nline two → end"
+    # Use rejoin:never so clean() does not merge the two lines before we count
+    # them — the point of this test is that _apply_replace preserves newlines,
+    # not that rejoin leaves them alone.
+    cfg = _replace_cfg({"→": "to"})
+    cfg["clean"]["rejoin"] = "never"
+    out = clean(text, cfg)
+    lines = [l for l in out.splitlines() if l.strip()]
+    assert len(lines) == 2
+    assert all("to end" in l for l in lines)
+
+
+def test_replace_empty_map_is_noop():
+    """Empty replace map (the default) leaves text unchanged."""
+    text = "A → B"
+    cfg_default = copy.deepcopy(DEFAULTS)
+    out = clean(text, cfg_default)
+    # Without a replace rule, the arrow stays (it's not stripped by default).
+    assert "→" in out

@@ -58,6 +58,7 @@ DEFAULTS: dict[str, Any] = {
         "by_app": {},
         "blocks": [],
     },
+    "replace": {},
     "window_read": {
         "max_chars": 20000,
     },
@@ -175,6 +176,20 @@ def _validate(cfg: dict[str, Any]) -> None:
         if not isinstance(app_rules, list) or not all(isinstance(r, str) for r in app_rules):
             raise ConfigError(
                 f"'mute.by_app.{app_name}' must be a list of strings."
+            )
+
+    # Replace rule validation.
+    replace = cfg.get("replace", {})
+    if not isinstance(replace, dict):
+        raise ConfigError("'replace' must be a mapping of string to string.")
+    for k, v in replace.items():
+        if not isinstance(k, str):
+            raise ConfigError(
+                f"'replace' key {k!r} must be a string."
+            )
+        if not isinstance(v, str):
+            raise ConfigError(
+                f"'replace' value for {k!r} must be a string; got {v!r}."
             )
 
 
