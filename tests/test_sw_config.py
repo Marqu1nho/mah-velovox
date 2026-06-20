@@ -88,7 +88,8 @@ def test_defaults_hud_complete():
     assert hud["opacity"] == 0.92
     assert hud["fade_after_sentences"] == 2
     assert hud["reanchor_pulse_after_s"] == 3
-    assert hud["linger_ms"] == 1500
+    assert hud["linger_ms"] == 800
+    assert hud["padding"] == 22
 
 
 # ---------------------------------------------------------------------------

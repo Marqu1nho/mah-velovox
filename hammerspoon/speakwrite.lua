@@ -172,9 +172,10 @@ local function buildHud()
   local lines     = tonumber(cfgGet("hud.lines", 6)) or 6
   local position  = cfgGet("hud.position", "center")
 
+  local padding = tonumber(cfgGet("hud.padding", 22)) or 22
   local hudW    = math.floor(screen.w * widthPct / 100)
-  local padX    = 18
-  local padY    = 10
+  local padX    = padding
+  local padY    = padding
   local lineH   = fontSize * 1.4          -- approximate line height
   local textH   = math.ceil(lineH * lines)
   local hudH    = textH + padY * 2

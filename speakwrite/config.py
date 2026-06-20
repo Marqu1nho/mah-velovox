@@ -27,9 +27,10 @@ DEFAULTS: dict[str, Any] = {
         "lines": 6,
         "font_size": 20,
         "opacity": 0.92,
+        "padding": 22,
         "fade_after_sentences": 2,
         "reanchor_pulse_after_s": 3,
-        "linger_ms": 1500,
+        "linger_ms": 800,
     },
     "polish": "punctuation",
     "inject": {
@@ -164,6 +165,7 @@ def _validate(cfg: dict[str, Any]) -> None:
         "hud.fade_after_sentences",
         "hud.reanchor_pulse_after_s",
         "hud.linger_ms",
+        "hud.padding",
     ):
         value = _get_dotted(cfg, dotted)
         if value is not None:
