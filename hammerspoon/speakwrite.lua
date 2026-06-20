@@ -162,13 +162,15 @@ local hudLinger  = nil   -- hs.timer for the post-done linger
 -- create/delete flicker. Returns the canvas or nil on failure.
 local function buildHud()
   -- Pick the screen under the mouse; fall back to mainScreen.
-  local mouseScreen = hs.screen.find(hs.mouse.absolutePosition())
+  local mousePos    = hs.mouse.absolutePosition()
+  local mouseScreen = hs.screen.find(mousePos)
   local screen      = (mouseScreen or hs.screen.mainScreen()):frame()
 
-  local widthPct  = tonumber(cfgGet("hud.width_pct", 50)) or 50
+  local widthPct  = tonumber(cfgGet("hud.width_pct", 30)) or 30
   local fontSize  = tonumber(cfgGet("hud.font_size", 20)) or 20
   local opacity   = tonumber(cfgGet("hud.opacity",  0.92)) or 0.92
-  local lines     = tonumber(cfgGet("hud.lines", 4)) or 4
+  local lines     = tonumber(cfgGet("hud.lines", 6)) or 6
+  local position  = cfgGet("hud.position", "center")
 
   local hudW    = math.floor(screen.w * widthPct / 100)
   local padX    = 18
@@ -177,21 +179,48 @@ local function buildHud()
   local textH   = math.ceil(lineH * lines)
   local hudH    = textH + padY * 2
 
-  -- Center horizontally; place at ~75% down the screen.
-  local hudX = screen.x + math.floor((screen.w - hudW) / 2)
-  local hudY = screen.y + math.floor(screen.h * 0.75) - math.floor(hudH / 2)
+  -- Resolve X/Y based on position setting.
+  -- "center"        → both horizontally and vertically centered.
+  -- "bottom-center" → horizontal center, ~75% down (old behavior).
+  -- "top-center"    → horizontal center, ~12% down.
+  -- "mouse"         → centered at the mouse cursor position.
+  -- {x=…, y=…}     → explicit top-left coordinates.
+  local hudX, hudY
+  local centerX = screen.x + math.floor((screen.w - hudW) / 2)
+
+  if type(position) == "table" and position.x ~= nil and position.y ~= nil then
+    hudX = math.floor(position.x)
+    hudY = math.floor(position.y)
+  elseif position == "bottom-center" then
+    hudX = centerX
+    hudY = screen.y + math.floor(screen.h * 0.75) - math.floor(hudH / 2)
+  elseif position == "top-center" then
+    hudX = centerX
+    hudY = screen.y + math.floor(screen.h * 0.12) - math.floor(hudH / 2)
+  elseif position == "mouse" then
+    hudX = math.floor(mousePos.x - hudW / 2)
+    hudY = math.floor(mousePos.y - hudH / 2)
+  else
+    -- Default: "center" — horizontally AND vertically centered.
+    hudX = centerX
+    hudY = screen.y + math.floor((screen.h - hudH) / 2)
+  end
 
   local c = hs.canvas.new({ x = hudX, y = hudY, w = hudW, h = hudH })
 
-  -- Background pill — no mouse tracking.
+  -- Background rounded rectangle (radius 14, not a full pill).
+  -- A full pill (radius = hudH/2) eats into the text area; 14px keeps corners
+  -- modest so the inner text area equals hudW - 2*padX wide.
   c[1] = {
     type             = "rectangle",
     action           = "fill",
-    roundedRectRadii = { xRadius = hudH / 2, yRadius = hudH / 2 },
+    roundedRectRadii = { xRadius = 14, yRadius = 14 },
     fillColor        = { red = 0, green = 0, blue = 0, alpha = 0.80 },
   }
 
   -- Text element (index 2 = hudTextIdx). Seeded with "listening…".
+  -- Frame is inset by padX/padY on all sides so text never renders outside
+  -- the rounded rectangle.
   local initStyled = hs.styledtext.new("listening…", {
     font       = { name = ".AppleSystemUIFont", size = fontSize },
     color      = { white = 1.0, alpha = opacity },
@@ -217,11 +246,51 @@ local function buildHud()
 end
 
 -- Update the HUD text in-place (no canvas delete/recreate).
-local function hudSetText(text)
+-- Implements tail-trim: only the LAST K lines of the full rolling transcript
+-- are shown, so the newest text is always visible at the bottom.  Older text
+-- is never lost — it lives in finalText and gets pasted in full on stop.
+--
+-- Approach: greedy word-wrap the full text at an estimated chars-per-line, then
+-- keep only the last K lines where K = lines config value.
+local function hudSetText(fullText)
   if not hud then return end
   local fontSize = tonumber(cfgGet("hud.font_size", 20)) or 20
   local opacity  = tonumber(cfgGet("hud.opacity", 0.92)) or 0.92
-  local styled   = hs.styledtext.new(text, {
+  local lines    = tonumber(cfgGet("hud.lines", 6)) or 6
+
+  -- Retrieve stored inner width from the text frame (set by buildHud).
+  local innerW = hud[hudTextIdx] and hud[hudTextIdx].frame and hud[hudTextIdx].frame.w or 300
+
+  -- Estimate average char width at this font size (roughly 0.5× em for the
+  -- system UI font at normal weight).
+  local charsPerLine = math.max(10, math.floor(innerW / (fontSize * 0.55)))
+
+  -- Greedy word-wrap: split into words, build lines greedily.
+  local wrapped = {}
+  local currentLine = ""
+  for word in fullText:gmatch("%S+") do
+    if #currentLine == 0 then
+      currentLine = word
+    elseif #currentLine + 1 + #word <= charsPerLine then
+      currentLine = currentLine .. " " .. word
+    else
+      table.insert(wrapped, currentLine)
+      currentLine = word
+    end
+  end
+  if #currentLine > 0 then
+    table.insert(wrapped, currentLine)
+  end
+
+  -- Keep only the tail (last `lines` lines) so newest text stays visible.
+  local tail = {}
+  local start = math.max(1, #wrapped - lines + 1)
+  for i = start, #wrapped do
+    table.insert(tail, wrapped[i])
+  end
+  local displayText = table.concat(tail, "\n")
+
+  local styled = hs.styledtext.new(displayText, {
     font       = { name = ".AppleSystemUIFont", size = fontSize },
     color      = { white = 1.0, alpha = opacity },
     paragraphStyle = { lineBreak = "wordWrap" },
@@ -255,8 +324,10 @@ end
 -- ---------------------------------------------------------------------------
 -- Streaming task + state.
 -- ---------------------------------------------------------------------------
-local dictTask   = nil   -- hs.task handle for the stream process
+local dictTask    = nil   -- hs.task handle for the stream process
 local isDictating = false
+local stopping    = false  -- true while send-stop in flight (between 2nd press and {done})
+local stopTimer   = nil    -- fallback watchdog: fires if daemon doesn't emit {done} in time
 local finalText   = nil  -- stashed from {event="final"} JSON
 local lineBuf     = ""   -- partial-line accumulator for streaming callback
 
@@ -304,9 +375,14 @@ end
 -- Called when dictation is fully done (after linger).
 local function onDictationDone()
   dlog("onDictationDone: finalText=%s", finalText and tostring(#finalText).." chars" or "nil")
+
+  -- Cancel the stop-watchdog timer (if it fired, we're here anyway — safe to cancel).
+  if stopTimer then stopTimer:stop(); stopTimer = nil end
+
   local textToPaste = finalText
   finalText   = nil
   isDictating = false
+  stopping    = false
   dictTask    = nil
   lineBuf     = ""
 
@@ -384,9 +460,11 @@ local function onStreamExit(exitCode, _stdOut, stdErr)
   end
 
   -- If {event="done"} already fired, onDictationDone has been called and
-  -- isDictating is already false. Only finalize here if we're still mid-session
-  -- (terminate race: SIGTERM handler may have emitted final but not done).
-  if isDictating then
+  -- isDictating/stopping are already false. Only finalize here if we're
+  -- still mid-session (covers the old standalone `stream` path where SIGTERM
+  -- causes the CLI to emit final+done before exiting, and the watchdog fallback
+  -- path where we forced terminate).
+  if isDictating or stopping then
     dlog("stream exit without done event — finalizing with latest text")
     onDictationDone()
   end
@@ -425,29 +503,47 @@ local function startDictation()
 end
 
 -- Stop an active dictation session.
--- For the standalone `stream` path: SIGTERM causes the CLI's handler to
--- finalize and emit final+done before exit, so onStreamExit picks it up.
--- FUTURE: once on the daemon, stop = spawn CLI {"send", "stop"} instead.
+-- We use the warm-daemon path: spawn `send stop` as a fire-and-forget command.
+-- The daemon receives "stop", finalizes the mic session, and emits
+-- {event:"final"} then {event:"done"} on the still-open dictate connection.
+-- Those events flow through onStreamChunk → handleJsonLine → onDictationDone,
+-- which does the paste + linger + hide and clears all state.
+-- We do NOT terminate dictTask here — it exits naturally when {done} arrives.
+-- A 3 s watchdog timer handles the case where the daemon wedges and never
+-- emits {done} (it force-terminates and calls onDictationDone directly).
 local function stopDictation()
-  if not isDictating then return end
-  dlog("stopping dictation (terminate)")
-  if dictTask and dictTask:isRunning() then
-    dictTask:terminate()
-    -- onStreamExit fires asynchronously and calls onDictationDone.
-  else
-    -- Task already gone — finalize directly.
-    onDictationDone()
+  if not isDictating or stopping then return end
+  dlog("stopping dictation (send stop)")
+  stopping = true
+
+  -- Tell the daemon to stop the current session.
+  if CLI then
+    hs.task.new(CLI, nil, { "send", "stop" }):start()
   end
-  -- NOTE: isDictating is cleared inside onDictationDone (async path).
-  -- We clear it here too so a rapid double-press can't start a second session
-  -- before the exit callback fires.
-  isDictating = false
+
+  -- Watchdog: if onDictationDone hasn't fired within 3 s, force-terminate.
+  stopTimer = hs.timer.doAfter(3, function()
+    stopTimer = nil
+    dlog("stop watchdog fired — forcing terminate")
+    if dictTask and dictTask:isRunning() then
+      dictTask:terminate()
+      -- onStreamExit will call onDictationDone via the stopping branch.
+    else
+      onDictationDone()
+    end
+  end)
 end
 
 -- ---------------------------------------------------------------------------
 -- Hotkey handler.
 -- ---------------------------------------------------------------------------
 local function onDictateHotkey()
+  if stopping then
+    -- Already in the stop→done window; ignore or give feedback.
+    dlog("onDictateHotkey: ignoring press while stopping in progress")
+    alert("finishing…")
+    return
+  end
   if isDictating then
     stopDictation()
   else

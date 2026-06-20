@@ -22,9 +22,9 @@ DEFAULTS: dict[str, Any] = {
     },
     "hud": {
         "show": True,
-        "position": "bottom-center",
-        "width_pct": 50,
-        "lines": 4,
+        "position": "center",
+        "width_pct": 30,
+        "lines": 6,
         "font_size": 20,
         "opacity": 0.92,
         "fade_after_sentences": 2,
@@ -50,7 +50,7 @@ _ENUMS: dict[str, set[str]] = {
 }
 
 # Valid string values for hud.position.
-_HUD_POSITION_STRINGS = {"bottom-center", "top-center", "mouse"}
+_HUD_POSITION_STRINGS = {"center", "bottom-center", "top-center", "mouse"}
 
 
 class ConfigError(Exception):

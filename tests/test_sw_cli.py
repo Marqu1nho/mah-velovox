@@ -46,7 +46,7 @@ def test_config_outputs_merged_defaults(capsys):
     assert code == 0
     cfg = json.loads(out)
     assert cfg["engine"] == "parakeet"
-    assert cfg["hud"]["width_pct"] == 50
+    assert cfg["hud"]["width_pct"] == 30
     assert cfg["hotkeys"]["dictate"] == ["ctrl", "alt", "`"]
 
 
@@ -67,7 +67,7 @@ def test_config_with_explicit_file(tmp_path, capsys):
     cfg = json.loads(out)
     assert cfg["hud"]["width_pct"] == 75
     # Other hud keys still present.
-    assert cfg["hud"]["lines"] == 4
+    assert cfg["hud"]["lines"] == 6
 
 
 def test_config_missing_explicit_path_exits_2(tmp_path, capsys):

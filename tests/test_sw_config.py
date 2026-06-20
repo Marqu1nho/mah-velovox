@@ -19,7 +19,7 @@ def test_default_path_missing_returns_defaults(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
     cfg = load_config()
     assert cfg["engine"] == "parakeet"
-    assert cfg["hud"]["width_pct"] == 50
+    assert cfg["hud"]["width_pct"] == 30
 
 
 def test_deep_merge_preserves_unspecified_keys(tmp_path):
@@ -28,7 +28,7 @@ def test_deep_merge_preserves_unspecified_keys(tmp_path):
     cfg = load_config(p)
     assert cfg["hud"]["width_pct"] == 80
     # Other hud keys retain defaults.
-    assert cfg["hud"]["lines"] == 4
+    assert cfg["hud"]["lines"] == 6
     assert cfg["hud"]["font_size"] == 20
 
 
@@ -81,9 +81,9 @@ def test_defaults_hotkeys_dictate():
 def test_defaults_hud_complete():
     hud = DEFAULTS["hud"]
     assert hud["show"] is True
-    assert hud["position"] == "bottom-center"
-    assert hud["width_pct"] == 50
-    assert hud["lines"] == 4
+    assert hud["position"] == "center"
+    assert hud["width_pct"] == 30
+    assert hud["lines"] == 6
     assert hud["font_size"] == 20
     assert hud["opacity"] == 0.92
     assert hud["fade_after_sentences"] == 2
@@ -214,7 +214,7 @@ def test_negative_linger_rejected(tmp_path):
 
 
 def test_position_string_valid(tmp_path):
-    for pos in ("bottom-center", "top-center", "mouse"):
+    for pos in ("center", "bottom-center", "top-center", "mouse"):
         p = tmp_path / f"pos_{pos}.yaml"
         p.write_text(f"hud:\n  position: {pos}\n")
         cfg = load_config(p)
