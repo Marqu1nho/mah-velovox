@@ -1,3 +1,5 @@
+# speakwrite
+config -> ~/.config/speakwrite/config.json
 # readaloud
 
 A hotkey-triggered, markdown-aware text-to-speech reader for macOS. Reads the

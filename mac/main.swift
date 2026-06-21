@@ -24,7 +24,11 @@ import Carbon.HIToolbox
 // key order when decoded. `\n` is a native JSON escape, so newlines just work.
 // ---------------------------------------------------------------------------
 struct Replacement: Codable { let say: String; let insert: String }
-struct HUDConfig: Codable { var alpha: Double; var fontSize: Double; var width: Double; var height: Double }
+// x/y are optional: absent on first run (HUD centers); written once you drag/resize.
+struct HUDConfig: Codable {
+    var alpha: Double; var fontSize: Double; var width: Double; var height: Double
+    var x: Double? = nil; var y: Double? = nil
+}
 
 struct Config: Codable {
     var locale: String
@@ -33,23 +37,25 @@ struct Config: Codable {
 
     static let fallback = Config(
         locale: "en-US",
-        hud: HUDConfig(alpha: 0.82, fontSize: 22, width: 720, height: 200),
+        hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 720, height: 200),
         replacements: [
             Replacement(say: "new paragraph", insert: "\n\n"),
             Replacement(say: "new line", insert: "\n"),
             Replacement(say: "cool beans", insert: "🆒🫘"),
         ])
 
+    private static var fileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/speakwrite/config.json")
+    }
+
     static func load() -> Config {
         let fm = FileManager.default
-        let dir = fm.homeDirectoryForCurrentUser.appendingPathComponent(".config/speakwrite", isDirectory: true)
-        let url = dir.appendingPathComponent("config.json")
+        let url = fileURL
 
         if !fm.fileExists(atPath: url.path) {
-            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            let enc = JSONEncoder()
-            enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-            if let data = try? enc.encode(fallback) { try? data.write(to: url) }
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let data = try? encoder().encode(fallback) { try? data.write(to: url) }
             NSLog("speakwrite: wrote default config -> \(url.path)")
             return fallback
         }
@@ -62,9 +68,20 @@ struct Config: Codable {
             return fallback
         }
     }
+
+    // Persist the live config (called when the HUD is moved/resized). Preserves
+    // the user's hand-edited replacements/locale — we mutate CONFIG in place.
+    static func save() {
+        do { try encoder().encode(CONFIG).write(to: fileURL) }
+        catch { NSLog("speakwrite: config save failed \(error)") }
+    }
+
+    private static func encoder() -> JSONEncoder {
+        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]; return e
+    }
 }
 
-let CONFIG = Config.load()
+var CONFIG = Config.load()
 
 // ---------------------------------------------------------------------------
 // A borderless panel that CAN become key (so the text view accepts edits), but
@@ -74,6 +91,143 @@ let CONFIG = Config.load()
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    // Catch Cmd+C at the window level — a menu-less LSUIElement app has no Edit
+    // menu wiring ⌘C to copy:, so we can't rely on responder routing. Returns
+    // true (consumed) only if the handler took the whole-buffer copy.
+    var onCmdC: (() -> Bool)?
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if mods == .command, event.charactersIgnoringModifiers == "c" {
+            NSLog("speakwrite: Cmd+C seen (panelKey=\(isKeyWindow))")
+            if onCmdC?() == true { return true }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transparent overlay that sits on top of the HUD and turns the border bands +
+// a top strip into drag-to-resize / drag-to-move handles. Over the text area its
+// hitTest returns nil, so clicks fall through to the editable text view below.
+// Zones are computed from the live bounds, so they stay correct after a resize.
+// ---------------------------------------------------------------------------
+final class HUDFrameView: NSView {
+    var marginSide: CGFloat = 16     // non-text band on left/right/bottom
+    var marginTop: CGFloat = 28      // taller band up top for the move strip
+    private let grab: CGFloat = 8    // how close to an edge counts as "resize"
+    private let minW: CGFloat = 240, minH: CGFloat = 90
+
+    var onMoveCommit: (() -> Void)?
+    var onResizeCommit: (() -> Void)?
+
+    private enum Mode { case none, move, left, right, bottom, bottomLeft, bottomRight }
+    private var mode: Mode = .none
+    private var startFrame: NSRect = .zero
+    private var startMouse: NSPoint = .zero   // screen coords
+
+    // The text passes through; everything else (border bands, strip) is ours.
+    private var textRect: NSRect {
+        NSRect(x: marginSide, y: marginSide,
+               width: bounds.width - 2 * marginSide,
+               height: bounds.height - marginSide - marginTop)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        textRect.contains(point) ? nil : self
+    }
+
+    private func detectMode(_ p: NSPoint) -> Mode {
+        let nearL = p.x <= grab, nearR = p.x >= bounds.maxX - grab, nearB = p.y <= grab
+        if nearB && nearL { return .bottomLeft }
+        if nearB && nearR { return .bottomRight }
+        if nearL { return .left }
+        if nearR { return .right }
+        if nearB { return .bottom }
+        return .move   // strip + inner margins
+    }
+
+    override func mouseDown(with e: NSEvent) {
+        mode = detectMode(convert(e.locationInWindow, from: nil))
+        startFrame = window?.frame ?? .zero
+        startMouse = NSEvent.mouseLocation
+    }
+
+    override func mouseDragged(with e: NSEvent) {
+        guard let win = window, mode != .none else { return }
+        let m = NSEvent.mouseLocation
+        let dx = m.x - startMouse.x, dy = m.y - startMouse.y
+        var f = startFrame
+        // NSWindow coords are y-up: dragging the bottom edge down (dy<0) grows height.
+        func resizeLeft()   { let w = max(minW, startFrame.width  - dx); f.origin.x = startFrame.maxX - w; f.size.width = w }
+        func resizeRight()  { f.size.width = max(minW, startFrame.width + dx) }
+        func resizeBottom() { let h = max(minH, startFrame.height - dy); f.origin.y = startFrame.maxY - h; f.size.height = h }
+        switch mode {
+        case .move:        f.origin.x = startFrame.origin.x + dx; f.origin.y = startFrame.origin.y + dy
+        case .left:        resizeLeft()
+        case .right:       resizeRight()
+        case .bottom:      resizeBottom()
+        case .bottomLeft:  resizeLeft();  resizeBottom()
+        case .bottomRight: resizeRight(); resizeBottom()
+        case .none:        break
+        }
+        win.setFrame(f, display: true)
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        if mode == .move { onMoveCommit?() }
+        else if mode != .none { onResizeCommit?() }
+        mode = .none
+    }
+
+    override func resetCursorRects() {
+        let b = bounds
+        addCursorRect(NSRect(x: 0, y: 0, width: b.width, height: grab), cursor: .resizeUpDown)             // bottom
+        addCursorRect(NSRect(x: 0, y: 0, width: grab, height: b.height), cursor: .resizeLeftRight)         // left
+        addCursorRect(NSRect(x: b.maxX - grab, y: 0, width: grab, height: b.height), cursor: .resizeLeftRight) // right
+        addCursorRect(NSRect(x: 0, y: b.maxY - marginTop, width: b.width, height: marginTop), cursor: .openHand) // move strip
+    }
+
+    // Hover cue: draw a small resize grip in the bottom-right corner when the
+    // mouse is over it, so it's discoverable that the corner is a grab handle.
+    private var hoverBR = false
+    private var brTracking: NSTrackingArea?
+    private var brCornerRect: NSRect { NSRect(x: bounds.maxX - 22, y: 0, width: 22, height: 22) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = brTracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: brCornerRect, options: [.mouseEnteredAndExited, .activeAlways], owner: self)
+        addTrackingArea(t); brTracking = t
+    }
+    override func mouseEntered(with e: NSEvent) { hoverBR = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent)  { hoverBR = false; needsDisplay = true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard hoverBR else { return }
+        NSColor.white.withAlphaComponent(0.6).setStroke()
+        let p = NSBezierPath(); p.lineWidth = 1.5; p.lineCapStyle = .round
+        let m = bounds.maxX
+        for k: CGFloat in [7, 12, 17] {   // three diagonal grip lines
+            p.move(to: NSPoint(x: m - 3, y: k))
+            p.line(to: NSPoint(x: m - k, y: 3))
+        }
+        p.stroke()
+    }
+}
+
+// Editable text view that treats Cmd+C with NO selection as "copy the whole
+// buffer" (a safety grab while building), but keeps normal selection-copy.
+final class AnchorTextView: NSTextView {
+    var onCopyAll: (() -> Void)?
+    override func copy(_ sender: Any?) {
+        if selectedRange().length == 0, let h = onCopyAll { h() } else { super.copy(sender) }
+    }
+}
+
+// Purely-visual label that never intercepts the mouse (passes clicks through to
+// the move/resize overlay below it). Used for the transient "✓ Copied" cue.
+final class PassthroughLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +235,8 @@ final class KeyablePanel: NSPanel {
 // ---------------------------------------------------------------------------
 final class HUD {
     private let panel: KeyablePanel
-    private let textView: NSTextView
+    private let textView: AnchorTextView
+    private let cueLabel = PassthroughLabel(labelWithString: "✓ Copied")
     private let fontSize = CGFloat(CONFIG.hud.fontSize)
     private let commAttrs: [NSAttributedString.Key: Any]
     private let volAttrs: [NSAttributedString.Key: Any]
@@ -109,24 +264,32 @@ final class HUD {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.alphaValue = CGFloat(CONFIG.hud.alpha)   // lower = more transparent
+        panel.alphaValue = 1.0   // keep text crisp; transparency lives in the bg film
+        panel.appearance = NSAppearance(named: .darkAqua)   // dark scroller etc.
 
-        // Rounded translucent background.
-        let bg = NSVisualEffectView(frame: panel.contentView!.bounds)
+        // Dark translucent "film" background — flat, not frosted vibrancy (the
+        // frost is what read as gray). `alpha` = film opacity: lower = more
+        // see-through. It's a sibling of the text, so the film can be very
+        // transparent without dimming the words.
+        let bg = NSView(frame: panel.contentView!.bounds)
         bg.autoresizingMask = [.width, .height]
-        bg.material = .hudWindow
-        bg.state = .active
         bg.wantsLayer = true
+        bg.layer?.backgroundColor = NSColor.black.withAlphaComponent(CGFloat(CONFIG.hud.alpha)).cgColor
         bg.layer?.cornerRadius = 16
         bg.layer?.masksToBounds = true
 
-        let inset: CGFloat = 18
-        let scroll = NSScrollView(frame: bg.bounds.insetBy(dx: inset, dy: inset))
+        // Text inset to leave a non-text band on every side: the overlay turns
+        // those bands into resize handles + a top move-strip. Margins MUST match
+        // HUDFrameView's (16 sides/bottom, 28 top) so visual text == pass-through.
+        let mSide: CGFloat = 16, mTop: CGFloat = 28
+        let scroll = NSScrollView(frame: NSRect(x: mSide, y: mSide,
+                                                width: bg.bounds.width - 2 * mSide,
+                                                height: bg.bounds.height - mSide - mTop))
         scroll.autoresizingMask = [.width, .height]
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
 
-        textView = NSTextView(frame: scroll.bounds)
+        textView = AnchorTextView(frame: scroll.bounds)
         textView.autoresizingMask = [.width]
         textView.isEditable = true               // v1: edit-as-you-go
         textView.isSelectable = true
@@ -138,9 +301,76 @@ final class HUD {
         textView.textContainerInset = NSSize(width: 4, height: 4)
         scroll.documentView = textView
 
-        bg.addSubview(scroll)
+        // z-order: film at back, text in front of it, move/resize overlay on top.
         panel.contentView!.addSubview(bg)
+        panel.contentView!.addSubview(scroll)
+
+        // Move/resize overlay on top — passes text-area clicks through to editing.
+        let overlay = HUDFrameView(frame: panel.contentView!.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.marginSide = mSide; overlay.marginTop = mTop
+        panel.contentView!.addSubview(overlay)
+        // self is fully initialized here (all stored properties assigned above).
+        overlay.onMoveCommit = { [weak self] in self?.snapToNearestZone(); self?.persistGeometry() }
+        overlay.onResizeCommit = { [weak self] in self?.persistGeometry() }
+        textView.onCopyAll = { [weak self] in self?.copyBuffer() }
+        // Window-level Cmd+C: copy the whole buffer unless there's a selection
+        // (then let the normal selection-copy proceed).
+        panel.onCmdC = { [weak self] in
+            guard let self else { return false }
+            if self.textView.selectedRange().length > 0 { return false }
+            self.copyBuffer(); return true
+        }
+
+        // Transient "✓ Copied" cue, frontmost + non-interactive.
+        cueLabel.font = .boldSystemFont(ofSize: 13)
+        cueLabel.textColor = .white
+        cueLabel.alignment = .center
+        cueLabel.wantsLayer = true
+        cueLabel.drawsBackground = true
+        cueLabel.backgroundColor = NSColor.black.withAlphaComponent(0.65)
+        cueLabel.layer?.cornerRadius = 8
+        cueLabel.layer?.masksToBounds = true
+        cueLabel.isHidden = true
+        panel.contentView!.addSubview(cueLabel)
+
         reset()
+        positionFromConfig()
+    }
+
+    // Cmd+C with no selection: copy the whole edited buffer to the clipboard as a
+    // safety grab, and flash a confirmation so you know it landed.
+    private func copyBuffer() {
+        let text = editableText().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        NSLog("speakwrite: copied buffer to clipboard (\(text.count) chars)")
+        flashCopiedCue()
+    }
+
+    private func flashCopiedCue() {
+        guard let cv = panel.contentView else { return }
+        let w: CGFloat = 96, h: CGFloat = 24
+        cueLabel.frame = NSRect(x: (cv.bounds.width - w) / 2, y: cv.bounds.height - h - 8, width: w, height: h)
+        cueLabel.alphaValue = 1
+        cueLabel.isHidden = false
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.9
+            cueLabel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in self?.cueLabel.isHidden = true })
+    }
+
+    // Restore the saved spot if it's still on a screen; otherwise center.
+    private func positionFromConfig() {
+        if let x = CONFIG.hud.x, let y = CONFIG.hud.y {
+            let origin = NSPoint(x: x, y: y)
+            let frame = NSRect(origin: origin, size: panel.frame.size)
+            if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) {
+                panel.setFrameOrigin(origin); return
+            }
+        }
         positionCentered()
     }
 
@@ -151,6 +381,30 @@ final class HUD {
         let x = f.minX + (f.width - size.width) / 2
         let y = f.minY + (f.height - size.height) / 2   // dead center
         panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // Snap the dropped panel to the nearest of a 9-grid of screen anchors, but
+    // only if it landed close to one — otherwise leave it where you dropped it.
+    private func snapToNearestZone() {
+        guard let screen = panel.screen ?? NSScreen.main else { return }
+        let vf = screen.visibleFrame
+        let f = panel.frame, m: CGFloat = 12
+        let xs = [vf.minX + m, vf.midX - f.width / 2, vf.maxX - f.width - m]
+        let ys = [vf.minY + m, vf.midY - f.height / 2, vf.maxY - f.height - m]
+        var best = f.origin, bestD = CGFloat.greatestFiniteMagnitude
+        for x in xs { for y in ys {
+            let d = hypot(x - f.origin.x, y - f.origin.y)
+            if d < bestD { bestD = d; best = NSPoint(x: x, y: y) }
+        }}
+        if bestD < 80 { panel.setFrameOrigin(best) }
+    }
+
+    // Write the live position + size back to config (preserving everything else).
+    private func persistGeometry() {
+        let f = panel.frame
+        CONFIG.hud.x = Double(f.origin.x); CONFIG.hud.y = Double(f.origin.y)
+        CONFIG.hud.width = Double(f.width); CONFIG.hud.height = Double(f.height)
+        Config.save()
     }
 
     // The dim volatile tail is always the trailing run with reduced alpha. We
@@ -241,7 +495,7 @@ final class HUD {
         textView.scrollToEndOfDocument(nil)
     }
 
-    func show() { positionCentered(); panel.orderFrontRegardless() }
+    func show() { positionFromConfig(); panel.orderFrontRegardless() }
     func hide() { panel.orderOut(nil) }
 }
 
