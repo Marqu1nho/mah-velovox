@@ -1,1 +1,0 @@
-# speakwrite.capture package

@@ -1,0 +1,66 @@
+# readaloud (Hammerspoon + kokoro daemon) and the native SpeakWrite.app.
+# speakwrite is no longer a Python daemon / Hammerspoon module — it's mac/SpeakWrite.app.
+
+PY     := .venv/bin/python
+HS     := /opt/homebrew/bin/hs
+STATE  := $(HOME)/.local/state
+MACDIR := mac
+APPID  := com.marco.speakwrite
+APP    := $(MACDIR)/SpeakWrite.app
+
+.DEFAULT_GOAL := help
+.PHONY: help restart-read reload-hs stop-read status \
+        mac mac-run mac-debug mac-kill mac-reset
+
+help:
+	@echo "Targets:"
+	@echo "  make restart-read   - bounce readaloud daemon + reload Hammerspoon"
+	@echo "  make reload-hs      - reload Hammerspoon only"
+	@echo "  make stop-read      - stop the readaloud daemon"
+	@echo "  make status         - show which daemons are running"
+	@echo "  --- native SpeakWrite.app ---"
+	@echo "  make mac            - compile + bundle + ad-hoc sign SpeakWrite.app"
+	@echo "  make mac-run        - (re)build, then launch it (ctrl+alt+S to dictate)"
+	@echo "  make mac-debug      - (re)build, run in foreground with logs"
+	@echo "  make mac-kill       - quit a running SpeakWrite"
+	@echo "  make mac-reset      - reset Mic+Accessibility grants, then rebuild"
+
+restart-read: stop-read
+	@mkdir -p $(STATE)/readaloud
+	@nohup $(PY) -m readaloud.daemon > $(STATE)/readaloud/daemon.out 2>&1 &
+	@echo "readaloud daemon launched (log: $(STATE)/readaloud/daemon.out)"
+	@$(MAKE) --no-print-directory reload-hs
+
+reload-hs:
+	@$(HS) -c "hs.reload()" >/dev/null 2>&1 || true
+	@echo "Hammerspoon reloaded"
+
+stop-read:
+	@pkill -f readaloud.daemon 2>/dev/null || true
+	@echo "readaloud daemon stopped"
+
+status:
+	@pgrep -fl readaloud.daemon || echo "readaloud: not running"
+
+# --- native SpeakWrite.app: compile + bundle + sign, all here so signing never
+#     has to be done by hand. mac-reset clears TCC grants (re-signing changes the
+#     ad-hoc identity, which can invalidate Mic/Accessibility) so re-granting is clean.
+mac:
+	@$(MACDIR)/build.sh
+
+mac-kill:
+	@pkill -x SpeakWrite 2>/dev/null || true
+
+mac-run: mac-kill mac
+	@open $(APP)
+	@echo "SpeakWrite launched (no dock icon). Press ctrl+alt+S to dictate."
+
+mac-debug: mac-kill mac
+	@echo "running in foreground — ctrl+C to stop. logs below:"
+	@$(APP)/Contents/MacOS/SpeakWrite
+
+mac-reset: mac-kill
+	@tccutil reset Microphone $(APPID) 2>/dev/null || true
+	@tccutil reset Accessibility $(APPID) 2>/dev/null || true
+	@$(MACDIR)/build.sh
+	@echo "TCC grants reset + rebuilt. Run 'make mac-run' and re-grant Mic + Accessibility."

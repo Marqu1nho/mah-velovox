@@ -14,3 +14,13 @@ wheels/
 
 # Experiment worktrees
 .worktrees/
+
+# Native app build artifacts
+mac/SpeakWrite.app/
+mac/SpeakWrite
+
+# Throwaway probes / recordings (kept locally, not committed)
+/apple_probe
+/apple_live
+/sw_diag.py
+/sw_diag.wav
