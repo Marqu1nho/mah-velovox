@@ -35,7 +35,24 @@ paste** is DONE.
 - **Launch/paste bug root-caused** — see §1.6. `make mac-start` added as the
   daily driver.
 
-Still open in v1: **§3.2 HUD move + snap + resize** (next), §3.5 display mode.
+**Update 2026-06-21 — v1 batch 2 shipped & verified:**
+- **§3.2 HUD move + snap + resize** — drag the top strip to move (snaps to a
+  9-grid of screen zones if dropped near one); drag edges/bottom-corners to
+  resize; position+size persist to `config.json` (`hud.x/y/width/height`).
+  Bottom-right **hover grip** cue.
+- **Dark "film" background** — replaced the gray frosted vibrancy with a flat
+  dark translucent layer; `alpha` now = film opacity (text stays crisp).
+- **⌘C copies the whole buffer** (window-level, since a menu-less LSUIElement app
+  has no Edit-menu wiring) with a "✓ Copied" flash; a selection copies normally.
+- **Arrow/click quick-edit** — the HUD now becomes the **key window** when shown
+  (it's the focused editor while up). Caret hidden during pure dictation; first
+  arrow drops it at the end of committed (non-gray) text, a click puts it where
+  you click. Stop still restores the prior app + pastes.
+
+Still open in v1: §3.5 display mode; **anchor on/off toggle + waveform/pulse
+minimal mode** (~1–2h basic / ~½d polished); file-backup/last-N history (future);
+optional pause-volatile-tail-while-editing. Then the **Xcode + Developer ID**
+fast-follow (also permanently kills the §1.6 launch/paste gotcha).
 
 ---
 
@@ -97,10 +114,15 @@ Single Swift file, no Xcode project: `mac/main.swift` (~270 lines), built by
 - **Paste:** `NSPasteboard` snapshot of ALL items/UTIs → set string → synthesized
   ⌘V via `CGEvent` → restore the snapshot after 0.15s (screenshot survives).
 
-**Update 2026-06-21:** the HUD `NSTextView` is now `isEditable = true` (edit-as-you-go),
-the panel is a `KeyablePanel` (`becomesKeyOnlyIfNeeded`), HUD knobs + locale + the
-replacement dictionary come from `~/.config/speakwrite/config.json`, and all make
-targets launch the **inner binary directly** (never `open` — §1.6).
+**Update 2026-06-21:** the HUD `NSTextView` (now `AnchorTextView`) is `isEditable`
+(edit-as-you-go), and the `KeyablePanel` **becomes the key window when shown** —
+the HUD is the focused editor while a session is up (`becomesKeyOnlyIfNeeded=false`,
+`makeKeyAndOrderFront`). Caret hidden until you arrow/click in. A transparent
+`HUDFrameView` overlay provides drag-move/resize + the hover grip; the background is
+a flat dark translucent film (not vibrancy). ⌘C (window-level) copies the buffer.
+HUD geometry + knobs + locale + replacements come from
+`~/.config/speakwrite/config.json`. All make targets launch the **inner binary
+directly** (never `open` — §1.6).
 
 **Build/run (all via make):**
 ```
@@ -139,7 +161,9 @@ Plan:
 - Decide: while editing, does the volatile tail keep updating (could be distracting)?
   Maybe pause the live tail while the text view has an active text cursor/selection.
 
-### 3.2 Move + snap + resize the HUD — ⏭️ NEXT
+### 3.2 Move + snap + resize the HUD — ✅ DONE (2026-06-21)
+*Interactive drag-to-move (snaps to a 9-grid), edge/corner resize, persisted to
+config; bottom-right hover grip. See the batch-2 note in §0.*
 Drag the panel; snap it to screen regions (corners / thirds / center). Persist the
 chosen spot. (NSPanel is already movable-by-background-drag-able with a little work;
 add snap zones.) Pure UX win.
