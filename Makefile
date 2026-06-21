@@ -10,7 +10,7 @@ APP    := $(MACDIR)/SpeakWrite.app
 
 .DEFAULT_GOAL := help
 .PHONY: help restart-read reload-hs stop-read status \
-        mac mac-run mac-debug mac-kill mac-reset tts
+        mac mac-run mac-start mac-debug mac-kill mac-reset tts
 
 help:
 	@echo "Targets:"
@@ -20,6 +20,7 @@ help:
 	@echo "  make status         - show which daemons are running"
 	@echo "  --- native SpeakWrite.app ---"
 	@echo "  make mac            - compile + bundle + ad-hoc sign SpeakWrite.app"
+	@echo "  make mac-start      - launch the EXISTING build, no rebuild (keeps permissions). Daily driver."
 	@echo "  make mac-run        - (re)build, then launch it (ctrl+alt+S to dictate)"
 	@echo "  make mac-debug      - (re)build, run in foreground with logs"
 	@echo "  make mac-kill       - quit a running SpeakWrite"
@@ -53,8 +54,17 @@ mac-kill:
 	@pkill -x SpeakWrite 2>/dev/null || true
 
 mac-run: mac-kill mac
-	@open $(APP)
+	@nohup $(APP)/Contents/MacOS/SpeakWrite >/dev/null 2>&1 &
 	@echo "SpeakWrite launched (no dock icon). Press ctrl+alt+S to dictate."
+
+# Launch the EXISTING build without recompiling/re-signing. Launches the inner
+# binary DIRECTLY (detached) rather than via `open` — TCC keys the Accessibility
+# grant to the direct-exec identity for this ad-hoc-signed app, and an `open`
+# (LaunchServices) launch presents a different identity that the grant misses,
+# silently breaking paste. Daily-driver command when code hasn't changed.
+mac-start: mac-kill
+	@nohup $(APP)/Contents/MacOS/SpeakWrite >/dev/null 2>&1 &
+	@echo "SpeakWrite launched from the existing build (no rebuild). ctrl+alt+S to dictate."
 
 mac-debug: mac-kill mac
 	@echo "running in foreground — ctrl+C to stop. logs below:"
