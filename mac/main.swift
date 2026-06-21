@@ -219,8 +219,17 @@ final class HUDFrameView: NSView {
 // buffer" (a safety grab while building), but keeps normal selection-copy.
 final class AnchorTextView: NSTextView {
     var onCopyAll: (() -> Void)?
+    var onKeyDown: ((NSEvent) -> Bool)?   // return true if consumed (e.g. first arrow)
+    var onUserClick: (() -> Void)?
     override func copy(_ sender: Any?) {
         if selectedRange().length == 0, let h = onCopyAll { h() } else { super.copy(sender) }
+    }
+    override func keyDown(with event: NSEvent) {
+        if onKeyDown?(event) == true { return }
+        super.keyDown(with: event)
+    }
+    override func mouseDown(with event: NSEvent) {
+        onUserClick?(); super.mouseDown(with: event)
     }
 }
 
@@ -238,6 +247,7 @@ final class HUD {
     private let textView: AnchorTextView
     private let cueLabel = PassthroughLabel(labelWithString: "✓ Copied")
     private let fontSize = CGFloat(CONFIG.hud.fontSize)
+    private var editing = false   // false until you click/arrow in; caret hidden
     private let commAttrs: [NSAttributedString.Key: Any]
     private let volAttrs: [NSAttributedString.Key: Any]
 
@@ -259,7 +269,7 @@ final class HUD {
         panel.level = .screenSaver                 // float above fullscreen
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = true        // only grab focus to edit text
+        panel.becomesKeyOnlyIfNeeded = false       // HUD is the focused editor while up
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -321,6 +331,15 @@ final class HUD {
             if self.textView.selectedRange().length > 0 { return false }
             self.copyBuffer(); return true
         }
+        // First arrow press (when not yet editing) drops the caret at the end of
+        // the committed (non-gray) text; a click puts it where you click.
+        textView.onKeyDown = { [weak self] event in
+            guard let self else { return false }
+            let arrows: Set<UInt16> = [123, 124, 125, 126]   // ← → ↓ ↑
+            if !self.editing, arrows.contains(event.keyCode) { self.enterEditAtCommittedEnd(); return true }
+            return false
+        }
+        textView.onUserClick = { [weak self] in self?.beginEditing() }
 
         // Transient "✓ Copied" cue, frontmost + non-interactive.
         cueLabel.font = .boldSystemFont(ofSize: 13)
@@ -432,8 +451,24 @@ final class HUD {
     var panelIsKey: Bool { panel.isKeyWindow }
 
     func reset() {
+        editing = false
+        textView.insertionPointColor = .clear   // hide caret until you engage
         textView.string = ""
         setVolatile("listening…")
+    }
+
+    // Reveal the caret + mark that the user has taken edit control.
+    private func beginEditing() {
+        editing = true
+        textView.insertionPointColor = .white
+    }
+
+    private func enterEditAtCommittedEnd() {
+        beginEditing()
+        let pos = volatileRange().location          // end of committed (non-gray) text
+        textView.setSelectedRange(NSRange(location: pos, length: 0))
+        textView.scrollRangeToVisible(NSRange(location: pos, length: 0))
+        NSLog("speakwrite: arrow-edit entered at committed end (pos=\(pos))")
     }
 
     // Append finalized text at the end of the editable region (before the dim
@@ -495,7 +530,11 @@ final class HUD {
         textView.scrollToEndOfDocument(nil)
     }
 
-    func show() { positionFromConfig(); panel.orderFrontRegardless() }
+    func show() {
+        positionFromConfig()
+        panel.makeKeyAndOrderFront(nil)        // become the key window (for arrows/typing)
+        panel.makeFirstResponder(textView)     // textView gets keys; caret stays hidden
+    }
     func hide() { panel.orderOut(nil) }
 }
 
