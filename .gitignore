@@ -18,6 +18,7 @@ wheels/
 # Native app build artifacts
 mac/SpeakWrite.app/
 mac/SpeakWrite
+mac/tts_probe
 
 # Throwaway probes / recordings (kept locally, not committed)
 /apple_probe

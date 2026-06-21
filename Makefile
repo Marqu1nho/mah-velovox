@@ -10,7 +10,7 @@ APP    := $(MACDIR)/SpeakWrite.app
 
 .DEFAULT_GOAL := help
 .PHONY: help restart-read reload-hs stop-read status \
-        mac mac-run mac-debug mac-kill mac-reset
+        mac mac-run mac-debug mac-kill mac-reset tts
 
 help:
 	@echo "Targets:"
@@ -24,6 +24,7 @@ help:
 	@echo "  make mac-debug      - (re)build, run in foreground with logs"
 	@echo "  make mac-kill       - quit a running SpeakWrite"
 	@echo "  make mac-reset      - reset Mic+Accessibility grants, then rebuild"
+	@echo "  make tts            - TTS probe: hear AVSpeechSynthesizer voices (readaloud-native test)"
 
 restart-read: stop-read
 	@mkdir -p $(STATE)/readaloud
@@ -64,3 +65,9 @@ mac-reset: mac-kill
 	@tccutil reset Accessibility $(APPID) 2>/dev/null || true
 	@$(MACDIR)/build.sh
 	@echo "TCC grants reset + rebuilt. Run 'make mac-run' and re-grant Mic + Accessibility."
+
+# TTS probe — hear AVSpeechSynthesizer (for the readaloud-native question). Speaks
+# a paragraph + lists voices. Pick a voice: ./mac/tts_probe <name>  (see file header).
+tts:
+	@xcrun -sdk macosx swiftc $(MACDIR)/tts_probe.swift -o $(MACDIR)/tts_probe
+	@./$(MACDIR)/tts_probe
