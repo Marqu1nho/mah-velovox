@@ -49,10 +49,26 @@ paste** is DONE.
   arrow drops it at the end of committed (non-gray) text, a click puts it where
   you click. Stop still restores the prior app + pastes.
 
-Still open in v1: §3.5 display mode; **anchor on/off toggle + waveform/pulse
-minimal mode** (~1–2h basic / ~½d polished); file-backup/last-N history (future);
-optional pause-volatile-tail-while-editing. Then the **Xcode + Developer ID**
-fast-follow (also permanently kills the §1.6 launch/paste gotcha).
+**Update 2026-06-21 — v1 batch 3 shipped:**
+- **Three display modes** via `displayMode`: **`hud`** (the editor, default),
+  **`orb`** (the listening visual), **`off`** (nothing — pure dictate→paste).
+  Old `text`/`minimal` still accepted as aliases; null/unknown → `hud`.
+- **The orb is `RawVoice.swift`** — a friend's SwiftUI `Canvas` view (now in
+  `mac/`, compiled alongside `main.swift`), hosted in an `NSHostingView`, fed by
+  OUR mic level (no second AVAudioEngine tap). `#Preview` stripped (needs Xcode).
+- **Orb design = "eye, not egg"**: no center nucleus; a steady anchor circle +
+  a reactive squiggle that coincide at rest (one clean circle) and separate only
+  on voice; dashes break out from behind the ring; emblem scaled compact.
+- **Separate geometry per mode** — `hud.{x,y,width,height}` vs `orb.{size,position}`
+  (9-grid anchor). They never borrow each other's settings.
+- **Configurable hotkey** — `"hotkey": "ctrl+alt+s"` etc. (mods + letter/digit/
+  punctuation). Logs `UNPARSEABLE` + falls back to ctrl+alt+s on a bad value.
+- Config is read **once at launch** (no hot-reload) → `make mac-start` to apply.
+
+Still open in v1: §3.5 text display tweaks; the orb's optional **accent-color-on-
+peaks**; file-backup/last-N history (future); pause-volatile-tail-while-editing.
+Then the **Xcode + Developer ID** fast-follow (also kills the §1.6 gotcha, and is
+where `RawVoiceDemoView`'s `#Preview` comes back).
 
 ---
 
