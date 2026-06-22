@@ -10,7 +10,7 @@ APP    := $(MACDIR)/SpeakWrite.app
 
 .DEFAULT_GOAL := help
 .PHONY: help restart-read reload-hs stop-read status \
-        mac mac-run mac-start mac-debug mac-kill mac-reset tts
+        mac mac-run mac-start mac-debug mac-kill mac-reset mac-stats tts
 
 help:
 	@echo "Targets:"
@@ -25,6 +25,7 @@ help:
 	@echo "  make mac-debug      - (re)build, run in foreground with logs"
 	@echo "  make mac-kill       - quit a running SpeakWrite"
 	@echo "  make mac-reset      - reset Mic+Accessibility grants, then rebuild"
+	@echo "  make mac-stats      - print dictation stats (7-day / last-50 / all-time wpm) from metrics.jsonl"
 	@echo "  make tts            - TTS probe: hear AVSpeechSynthesizer voices (readaloud-native test)"
 
 restart-read: stop-read
@@ -75,6 +76,10 @@ mac-reset: mac-kill
 	@tccutil reset Accessibility $(APPID) 2>/dev/null || true
 	@$(MACDIR)/build.sh
 	@echo "TCC grants reset + rebuilt. Run 'make mac-run' and re-grant Mic + Accessibility."
+
+# Dictation stats — read metrics.jsonl and print 7-day / last-50 / all-time wpm.
+mac-stats:
+	@$(PY) sw_stats.py
 
 # TTS probe — hear AVSpeechSynthesizer (for the readaloud-native question). Speaks
 # a paragraph + lists voices. Pick a voice: ./mac/tts_probe <name>  (see file header).
