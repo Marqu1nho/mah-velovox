@@ -745,18 +745,34 @@ final class HUD {
 // segment as it streams, so the HUD shows the substitution live and the pasted
 // document already contains it. "new line" is just a dictionary entry that maps
 // to a newline char (Apple never emits one itself). Case-insensitive, whole-
-// phrase. Ordered most-specific-first. Trivial to externalize to config (§3.6).
+// phrase. Ordered most-specific-first.
+//
+// A `say` value may be either:
+//   • a literal phrase (default) — matched whole-word, metacharacters escaped.
+//   • a regex, by prefixing it with `re:` — the part after `re:` is used as a
+//     raw NSRegularExpression (you control your own anchors; no implicit \b).
+//     e.g.  {"say": "re:essay (config|configuration)", "insert": "essay config"}
+// In both cases `insert` is a literal string — regex backreferences ($1) are not
+// substituted, so a rule normalizes many spoken variants to one fixed string.
 // ---------------------------------------------------------------------------
 enum Replacements {
     private static let compiled: [(NSRegularExpression, String)] = CONFIG.replacements.compactMap { rule in
-        let p = NSRegularExpression.escapedPattern(for: rule.say)
-        // Newline commands also swallow any whitespace/punctuation hugging the
-        // phrase, so a spoken "new line" never leaves a stray comma or period on
-        // the seam. Text replacements (e.g. emoji) keep their surroundings intact.
-        let pattern = rule.insert.contains("\n")
-            ? "[\\s,.;:!?]*\\b\(p)\\b[\\s,.;:!?]*"
-            : "\\b\(p)\\b"
-        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let pattern: String
+        if rule.say.hasPrefix("re:") {
+            // Raw regex: everything after the "re:" prefix, used verbatim.
+            pattern = String(rule.say.dropFirst(3))
+        } else {
+            let p = NSRegularExpression.escapedPattern(for: rule.say)
+            // Newline commands also swallow any whitespace/punctuation hugging the
+            // phrase, so a spoken "new line" never leaves a stray comma or period
+            // on the seam. Text replacements (e.g. emoji) keep their surroundings.
+            pattern = rule.insert.contains("\n")
+                ? "[\\s,.;:!?]*\\b\(p)\\b[\\s,.;:!?]*"
+                : "\\b\(p)\\b"
+        }
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            NSLog("speakwrite: bad replacement pattern '\(rule.say)' — skipped"); return nil
+        }
         return (re, NSRegularExpression.escapedTemplate(for: rule.insert))
     }
     static func apply(_ s: String) -> String {

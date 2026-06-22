@@ -57,6 +57,36 @@ log:
 log show --predicate 'eventMessage CONTAINS "speakwrite: engine"' --last 5m --style compact
 ```
 
+## Replacements
+
+`replacements` maps a spoken phrase to inserted text, applied live as you
+dictate (this is also how `new line` / `new paragraph` work — Apple never emits
+a newline itself):
+
+```json
+"replacements": [
+  { "say": "new paragraph", "insert": "\n\n" },
+  { "say": "cool beans", "insert": "😎🫘" },
+  { "say": "re:essay (config|configuration)\\b", "insert": "essay config" }
+]
+```
+
+Each `say` is either:
+
+- a **literal** phrase (default) — matched whole-word, case-insensitive, with
+  regex metacharacters escaped for you.
+- a **regex**, by prefixing it with `re:` — the part after `re:` is used as a
+  raw pattern. A few gotchas:
+  - In JSON, escape backslashes: write `\b` as `\\b`.
+  - Regex rules get **no implicit `\b`** — you control your own anchors.
+  - Alternation is **first-match, not longest-match**, so
+    `(config|configuration)` matches just `config` inside "configuration"
+    unless you add a trailing `\b` (or order longest-first).
+
+`insert` is always a literal string — backreferences like `$1` are **not**
+substituted. The point of a regex rule is to normalize many spoken variants to
+one fixed string.
+
 # readaloud
 
 A hotkey-triggered, markdown-aware text-to-speech reader for macOS. Reads the
