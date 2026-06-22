@@ -10,6 +10,8 @@
 // transcript. The volatile tail is located by its dim attribute each update, so
 // it's robust to your edits in the bright region above it.
 import Cocoa
+import SwiftUI
+import Combine
 import Speech
 import AVFoundation
 import Carbon.HIToolbox
@@ -24,20 +26,36 @@ import Carbon.HIToolbox
 // key order when decoded. `\n` is a native JSON escape, so newlines just work.
 // ---------------------------------------------------------------------------
 struct Replacement: Codable { let say: String; let insert: String }
-// x/y are optional: absent on first run (HUD centers); written once you drag/resize.
+// TEXT-mode geometry. x/y optional: absent → bottom-center; written when you drag/resize.
 struct HUDConfig: Codable {
     var alpha: Double; var fontSize: Double; var width: Double; var height: Double
     var x: Double? = nil; var y: Double? = nil
 }
+// MINIMAL-mode (orb) config — kept SEPARATE from HUDConfig so the two modes never
+// borrow each other's geometry (the bug where a tiny orb window carried into text).
+// Per the RawVoice handoff the orb is a fixed, centered ambient indicator.
+struct OrbConfig: Codable { var size: Double }
 
 struct Config: Codable {
     var locale: String
+    var displayMode: String? = nil   // "text" (default), "minimal" (orb), or "off"
     var hud: HUDConfig
+    var orb: OrbConfig? = nil
     var replacements: [Replacement]
+
+    // "text" (default) shows the editor; "minimal" the orb; "off" nothing.
+    // A missing/null value means "text" — so upgrading never hides the app.
+    var mode: String {
+        switch displayMode { case "minimal": return "minimal"; case "off": return "off"; default: return "text" }
+    }
+    var minimal: Bool { mode == "minimal" }
+    var orbSize: CGFloat { CGFloat(orb?.size ?? 150) }
 
     static let fallback = Config(
         locale: "en-US",
-        hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 720, height: 200),
+        displayMode: "text",
+        hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160),
+        orb: OrbConfig(size: 150),
         replacements: [
             Replacement(say: "new paragraph", insert: "\n\n"),
             Replacement(say: "new line", insert: "\n"),
@@ -239,12 +257,27 @@ final class PassthroughLabel: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+// Hosts the friend's SwiftUI RawVoiceView (minimal mode), observing a smoothed
+// level fed from OUR mic tap (no second AVAudioEngine tap — see RawVoice-Handoff).
+final class OrbLevel: ObservableObject { @Published var level: CGFloat = 0 }
+struct RawVoiceHost: View {
+    @ObservedObject var model: OrbLevel
+    var diameter: CGFloat
+    var body: some View { RawVoiceView(level: model.level, diameter: diameter, stageColor: .clear) }
+}
+
 // ---------------------------------------------------------------------------
 // HUD — non-activating floating panel with a scrollable, editable text view.
 // ---------------------------------------------------------------------------
 final class HUD {
     private let panel: KeyablePanel
     private let textView: AnchorTextView
+    private let bg: NSView
+    private let scroll: NSScrollView
+    private let overlay: HUDFrameView
+    private let orbModel = OrbLevel()
+    private let orbHost: NSHostingView<RawVoiceHost>
+    private var orbLevel: CGFloat = 0    // smoothed (fast attack / slow release)
     private let cueLabel = PassthroughLabel(labelWithString: "✓ Copied")
     private let fontSize = CGFloat(CONFIG.hud.fontSize)
     private var editing = false   // false until you click/arrow in; caret hidden
@@ -260,6 +293,8 @@ final class HUD {
             .font: NSFont.systemFont(ofSize: fontSize),
             .foregroundColor: NSColor(white: 1.0, alpha: 0.45),
         ]
+        // Assign before any [weak self] closure below so self is fully initialized.
+        orbHost = NSHostingView(rootView: RawVoiceHost(model: orbModel, diameter: CONFIG.orbSize))
 
         let w = CGFloat(CONFIG.hud.width), h = CGFloat(CONFIG.hud.height)
         panel = KeyablePanel(
@@ -281,7 +316,7 @@ final class HUD {
         // frost is what read as gray). `alpha` = film opacity: lower = more
         // see-through. It's a sibling of the text, so the film can be very
         // transparent without dimming the words.
-        let bg = NSView(frame: panel.contentView!.bounds)
+        bg = NSView(frame: panel.contentView!.bounds)
         bg.autoresizingMask = [.width, .height]
         bg.wantsLayer = true
         bg.layer?.backgroundColor = NSColor.black.withAlphaComponent(CGFloat(CONFIG.hud.alpha)).cgColor
@@ -292,9 +327,9 @@ final class HUD {
         // those bands into resize handles + a top move-strip. Margins MUST match
         // HUDFrameView's (16 sides/bottom, 28 top) so visual text == pass-through.
         let mSide: CGFloat = 16, mTop: CGFloat = 28
-        let scroll = NSScrollView(frame: NSRect(x: mSide, y: mSide,
-                                                width: bg.bounds.width - 2 * mSide,
-                                                height: bg.bounds.height - mSide - mTop))
+        scroll = NSScrollView(frame: NSRect(x: mSide, y: mSide,
+                                            width: bg.bounds.width - 2 * mSide,
+                                            height: bg.bounds.height - mSide - mTop))
         scroll.autoresizingMask = [.width, .height]
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -316,7 +351,7 @@ final class HUD {
         panel.contentView!.addSubview(scroll)
 
         // Move/resize overlay on top — passes text-area clicks through to editing.
-        let overlay = HUDFrameView(frame: panel.contentView!.bounds)
+        overlay = HUDFrameView(frame: panel.contentView!.bounds)
         overlay.autoresizingMask = [.width, .height]
         overlay.marginSide = mSide; overlay.marginTop = mTop
         panel.contentView!.addSubview(overlay)
@@ -353,8 +388,32 @@ final class HUD {
         cueLabel.isHidden = true
         panel.contentView!.addSubview(cueLabel)
 
+        // RawVoice orb for minimal mode — floats on the transparent panel; hidden in text.
+        orbHost.frame = panel.contentView!.bounds
+        orbHost.autoresizingMask = [.width, .height]
+        orbHost.isHidden = true
+        panel.contentView!.addSubview(orbHost)
+
         reset()
         positionFromConfig()
+    }
+
+    // Toggle subviews for the active mode (text shows editor; minimal shows the
+    // orb on a transparent background so it floats).
+    private func applyMode() {
+        let minimal = CONFIG.minimal
+        orbHost.isHidden = !minimal
+        scroll.isHidden = minimal
+        overlay.isHidden = minimal
+        bg.isHidden = minimal            // transparent film in minimal → orb floats
+        if minimal { cueLabel.isHidden = true }
+    }
+
+    // Feed the live mic level (0…1) to the orb, smoothed fast-attack / slow-release.
+    func setLevel(_ v: Float) {
+        let target = CGFloat(max(0, min(1, v)))
+        orbLevel += (target - orbLevel) * (target > orbLevel ? 0.5 : 0.15)
+        orbModel.level = orbLevel
     }
 
     // Cmd+C with no selection: copy the whole edited buffer to the clipboard as a
@@ -381,7 +440,7 @@ final class HUD {
         }, completionHandler: { [weak self] in self?.cueLabel.isHidden = true })
     }
 
-    // Restore the saved spot if it's still on a screen; otherwise center.
+    // Restore the saved spot if it's still on a screen; otherwise bottom-center.
     private func positionFromConfig() {
         if let x = CONFIG.hud.x, let y = CONFIG.hud.y {
             let origin = NSPoint(x: x, y: y)
@@ -390,7 +449,14 @@ final class HUD {
                 panel.setFrameOrigin(origin); return
             }
         }
-        positionCentered()
+        positionBottomCenter()
+    }
+
+    private func positionBottomCenter() {
+        guard let screen = NSScreen.main else { return }
+        let f = screen.visibleFrame
+        let size = panel.frame.size
+        panel.setFrameOrigin(NSPoint(x: f.minX + (f.width - size.width) / 2, y: f.minY + 64))
     }
 
     private func positionCentered() {
@@ -531,9 +597,26 @@ final class HUD {
     }
 
     func show() {
-        positionFromConfig()
-        panel.makeKeyAndOrderFront(nil)        // become the key window (for arrows/typing)
-        panel.makeFirstResponder(textView)     // textView gets keys; caret stays hidden
+        switch CONFIG.mode {
+        case "off":
+            return                                     // show nothing; dictate → paste only
+        case "minimal":
+            applyMode()
+            let s = CONFIG.orbSize                      // fixed ambient indicator (own config)
+            orbLevel = 0; orbModel.level = 0
+            orbHost.rootView = RawVoiceHost(model: orbModel, diameter: s)
+            panel.setContentSize(NSSize(width: s, height: s))
+            positionCentered()
+            panel.isMovableByWindowBackground = false   // fixed + centered (per RawVoice handoff)
+            panel.orderFrontRegardless()                // don't steal focus in minimal mode
+        default:                                       // "text"
+            applyMode()
+            panel.isMovableByWindowBackground = false
+            panel.setContentSize(NSSize(width: CGFloat(CONFIG.hud.width), height: CGFloat(CONFIG.hud.height)))
+            positionFromConfig()
+            panel.makeKeyAndOrderFront(nil)            // become the key window (for arrows/typing)
+            panel.makeFirstResponder(textView)         // textView gets keys; caret stays hidden
+        }
     }
     func hide() { panel.orderOut(nil) }
 }
@@ -583,6 +666,7 @@ final class Dictation {
     private var committedCount = 0   // chars finalized this session (for the stop log)
 
     var onSegment: ((Bool, String) -> Void)?   // (isFinal, text)
+    var onLevel: ((Float) -> Void)?            // live mic level 0…1 (for the pulse orb)
 
     func start() {
         committedCount = 0
@@ -630,7 +714,17 @@ final class Dictation {
             let input = engine.inputNode
             let inFmt = input.outputFormat(forBus: 0)
             guard let converter = AVAudioConverter(from: inFmt, to: fmt) else { return }
-            input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { buf, _ in
+            input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { [weak self] buf, _ in
+                // Mic level for the pulse orb: RMS -> dB -> normalized (-50…-10 dB).
+                if let ch = buf.floatChannelData?[0] {
+                    let n = Int(buf.frameLength)
+                    var sumSq: Float = 0
+                    for i in 0..<n { let s = ch[i]; sumSq += s * s }
+                    let rms = (n > 0) ? sqrtf(sumSq / Float(n)) : 0
+                    let db = 20 * log10f(max(rms, 1e-7))
+                    let norm = max(0, min(1, (db + 50) / 40))
+                    DispatchQueue.main.async { self?.onLevel?(norm) }
+                }
                 let ratio = fmt.sampleRate / inFmt.sampleRate
                 let cap = AVAudioFrameCount(Double(buf.frameLength) * ratio + 1024)
                 guard let out = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: cap) else { return }
@@ -716,6 +810,7 @@ final class Controller {
                 self.hud.setVolatile(text)
             }
         }
+        dictation.onLevel = { [weak self] level in self?.hud.setLevel(level) }
     }
 
     func toggle() {

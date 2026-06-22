@@ -8,7 +8,7 @@ BIN="SpeakWrite"
 BUNDLE_ID="com.marco.speakwrite"
 
 echo "compiling..."
-xcrun -sdk macosx swiftc -O main.swift -o "${BIN}"
+xcrun -sdk macosx swiftc -O main.swift RawVoice.swift -o "${BIN}"
 
 echo "assembling ${APP}..."
 rm -rf "${APP}"
