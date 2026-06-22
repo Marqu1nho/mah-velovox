@@ -1,5 +1,62 @@
 # speakwrite
-config -> ~/.config/speakwrite/config.json
+
+A hotkey-triggered, on-device dictation app for macOS (native Swift, in `mac/`).
+Press the hotkey, talk, and the transcript is pasted at your cursor. It runs on
+Apple's on-device speech stack — no cloud, no network.
+
+Config lives at `~/.config/speakwrite/config.json` and is read **at launch**, so
+config changes need a relaunch (`make speak`).
+
+## Speech engine
+
+SpeakWrite can use either of Apple's two on-device transcribers. Pick one with
+the `engine` key:
+
+```json
+{
+  "engine": "dictation",
+  "dictation": {
+    "punctuation": false,
+    "emoji": true
+  }
+}
+```
+
+| `engine`      | Class (Apple)         | Punctuation & caps                                    |
+| ------------- | --------------------- | ----------------------------------------------------- |
+| `"speech"`    | `SpeechTranscriber`   | Always auto-punctuated and auto-capitalized. No knob. |
+| `"dictation"` | `DictationTranscriber`| Punctuation/emoji are **opt-in** (see below).         |
+
+### `"speech"` — auto-punctuated (default)
+
+Apple's `SpeechTranscriber` with the `.progressiveTranscription` preset. It
+auto-inserts punctuation and capitalization, and the engine exposes **no toggle**
+to turn that off. A side effect: when you pause to think mid-sentence, it often
+finalizes the segment with a period — so a thinking pause can wrongly end your
+sentence.
+
+### `"dictation"` — punctuation on your terms
+
+Apple's `DictationTranscriber`. Punctuation and emoji are separate opt-in flags:
+
+- **`dictation.punctuation`** (default `false`) — when `false`, the engine
+  **never auto-inserts periods/commas** and stays mostly lowercase, so a pause
+  never ends a sentence. You add punctuation yourself (speak it, or via
+  `replacements`). Set `true` to get auto-punctuation back.
+- **`dictation.emoji`** (default `false`) — when `true`, spoken emoji names are
+  converted to the emoji (say "star-struck" → 🤩, "fire" → 🔥).
+
+This mode suits short bursts of dictated text where you'd rather format
+punctuation by hand than fight auto-inserted periods. The first run after
+switching may pause briefly while macOS downloads the dictation model (one-time).
+
+To confirm which engine a session actually started, dictate once and check the
+log:
+
+```sh
+log show --predicate 'eventMessage CONTAINS "speakwrite: engine"' --last 5m --style compact
+```
+
 # readaloud
 
 A hotkey-triggered, markdown-aware text-to-speech reader for macOS. Reads the

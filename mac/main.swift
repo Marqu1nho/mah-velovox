@@ -75,8 +75,19 @@ struct AudioConfig: Codable {
     var warnBluetoothInput: Bool? = nil
 }
 
+// Tuning for the "dictation" engine (DictationTranscriber). Both flags are
+// opt-in on Apple's side: leave punctuation false and the engine never
+// auto-inserts periods/commas (so a thinking pause won't end your sentence) and
+// stays mostly lowercase — you speak punctuation yourself / via replacements.
+struct DictationConfig: Codable {
+    var punctuation: Bool? = nil
+    var emoji: Bool? = nil
+}
+
 struct Config: Codable {
     var locale: String
+    var engine: String? = nil        // "speech" (default, auto-punctuated) or "dictation"
+    var dictation: DictationConfig? = nil
     var displayMode: String? = nil   // "hud" (default), "orb", or "off"
     var hotkey: String? = nil        // e.g. "ctrl+alt+s"; default if absent
     var hud: HUDConfig
@@ -106,6 +117,10 @@ struct Config: Codable {
     var cueVolume: Float { Float(cue?.volume ?? 0.5) }
     var cueBloom: Bool { cue?.bloom ?? true }
     var hudCommitOnly: Bool { hud.commitOnly ?? false }
+    // "speech" → SpeechTranscriber (auto-punctuation); "dictation" → DictationTranscriber.
+    var engineKind: String { engine == "dictation" ? "dictation" : "speech" }
+    var dictationPunctuation: Bool { dictation?.punctuation ?? false }
+    var dictationEmoji: Bool { dictation?.emoji ?? false }
     var metricsEnabled: Bool { metrics?.enabled ?? true }
     var metricSilenceGrace: Double { metrics?.silenceGraceSeconds ?? 1.0 }
     var metricVoiceThreshold: Double { metrics?.voiceThreshold ?? 0.15 }
@@ -114,6 +129,8 @@ struct Config: Codable {
 
     static let fallback = Config(
         locale: "en-US",
+        engine: "speech",
+        dictation: DictationConfig(punctuation: false, emoji: false),
         displayMode: "hud",
         hotkey: "ctrl+alt+s",
         hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160, commitOnly: false),
@@ -983,21 +1000,26 @@ final class Dictation {
     }
 
     private func run() async {
-        let transcriber = SpeechTranscriber(locale: Locale(identifier: CONFIG.locale),
-                                            preset: .progressiveTranscription)
-        do {
-            if let req = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                try await req.downloadAndInstall()
-            }
-            let analyzer = SpeechAnalyzer(modules: [transcriber]); self.analyzer = analyzer
-            guard let fmt = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { return }
-
-            let (stream, cont) = AsyncStream<AnalyzerInput>.makeStream(); self.continuation = cont
-
+        // Pick the engine per config. Both transcribers expose a `.results`
+        // sequence of (.text, .isFinal), so only the module type and how we
+        // start its loop differ — everything below (assets, analyzer, audio
+        // tap) treats it as `any SpeechModule`.
+        let module: any SpeechModule
+        switch CONFIG.engineKind {
+        case "dictation":
+            var opts: Set<DictationTranscriber.TranscriptionOption> = []
+            if CONFIG.dictationPunctuation { opts.insert(.punctuation) }
+            if CONFIG.dictationEmoji { opts.insert(.emoji) }
+            let t = DictationTranscriber(locale: Locale(identifier: CONFIG.locale),
+                                         contentHints: [],
+                                         transcriptionOptions: opts,
+                                         reportingOptions: [.volatileResults],
+                                         attributeOptions: [])
+            module = t
             resultsTask = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    for try await r in transcriber.results {
+                    for try await r in t.results {
                         let txt = Replacements.apply(String(r.text.characters))
                         let isFinal = r.isFinal
                         if isFinal { self.committedCount += txt.count }
@@ -1005,6 +1027,32 @@ final class Dictation {
                     }
                 } catch { NSLog("speakwrite: results error \(error)") }
             }
+            NSLog("speakwrite: engine=dictation punctuation=\(CONFIG.dictationPunctuation) emoji=\(CONFIG.dictationEmoji)")
+        default:
+            let t = SpeechTranscriber(locale: Locale(identifier: CONFIG.locale),
+                                      preset: .progressiveTranscription)
+            module = t
+            resultsTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    for try await r in t.results {
+                        let txt = Replacements.apply(String(r.text.characters))
+                        let isFinal = r.isFinal
+                        if isFinal { self.committedCount += txt.count }
+                        await MainActor.run { self.onSegment?(isFinal, txt) }
+                    }
+                } catch { NSLog("speakwrite: results error \(error)") }
+            }
+            NSLog("speakwrite: engine=speech")
+        }
+        do {
+            if let req = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
+                try await req.downloadAndInstall()
+            }
+            let analyzer = SpeechAnalyzer(modules: [module]); self.analyzer = analyzer
+            guard let fmt = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else { return }
+
+            let (stream, cont) = AsyncStream<AnalyzerInput>.makeStream(); self.continuation = cont
 
             try await analyzer.start(inputSequence: stream)
 
