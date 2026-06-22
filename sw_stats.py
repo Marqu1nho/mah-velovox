@@ -86,7 +86,9 @@ def main():
     thinking = (1 - total_speaking / total_mic) if total_mic else 0.0
 
     total_words = sum(s["words"] for s in sessions if isinstance(s.get("words"), (int, float)))
-    best = max((s["wpm"] for s in sessions if isinstance(s.get("wpm"), (int, float))), default=None)
+    wpms = [s["wpm"] for s in sessions if isinstance(s.get("wpm"), (int, float))]
+    best = max(wpms, default=None)
+    worst = min(wpms, default=None)
 
     print("SpeakWrite stats")
     print("================")
@@ -96,6 +98,7 @@ def main():
     print()
     print(f"  total sessions: {len(sessions)}")
     print(f"  best wpm      : {fmt_wpm(best)}")
+    print(f"  worst wpm     : {fmt_wpm(worst)}")
     print(f"  total words   : {total_words}")
     print(f"  thinking %    : {thinking * 100:.0f}%  (share of mic time excluded as silence/thinking)")
 
