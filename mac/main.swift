@@ -34,28 +34,40 @@ struct HUDConfig: Codable {
 // MINIMAL-mode (orb) config — kept SEPARATE from HUDConfig so the two modes never
 // borrow each other's geometry (the bug where a tiny orb window carried into text).
 // Per the RawVoice handoff the orb is a fixed, centered ambient indicator.
-struct OrbConfig: Codable { var size: Double }
+struct OrbConfig: Codable {
+    var size: Double
+    var position: String? = nil   // 9-grid anchor: top-left … center … bottom-right
+}
 
 struct Config: Codable {
     var locale: String
-    var displayMode: String? = nil   // "text" (default), "minimal" (orb), or "off"
+    var displayMode: String? = nil   // "hud" (default), "orb", or "off"
+    var hotkey: String? = nil        // e.g. "ctrl+alt+s"; default if absent
     var hud: HUDConfig
     var orb: OrbConfig? = nil
     var replacements: [Replacement]
 
-    // "text" (default) shows the editor; "minimal" the orb; "off" nothing.
-    // A missing/null value means "text" — so upgrading never hides the app.
+    // Canonical mode. Accepts the new names (hud/orb) and the old ones
+    // (text/minimal) for back-compat. Missing/null/unknown → "hud" so an upgrade
+    // never leaves the app invisible.
     var mode: String {
-        switch displayMode { case "minimal": return "minimal"; case "off": return "off"; default: return "text" }
+        switch displayMode {
+        case "orb", "minimal": return "orb"
+        case "off":            return "off"
+        default:               return "hud"
+        }
     }
-    var minimal: Bool { mode == "minimal" }
+    var orbMode: Bool { mode == "orb" }
     var orbSize: CGFloat { CGFloat(orb?.size ?? 150) }
+    var orbPosition: String { orb?.position ?? "center" }
+    var hotkeySpec: String { hotkey ?? "ctrl+alt+s" }
 
     static let fallback = Config(
         locale: "en-US",
-        displayMode: "text",
+        displayMode: "hud",
+        hotkey: "ctrl+alt+s",
         hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160),
-        orb: OrbConfig(size: 150),
+        orb: OrbConfig(size: 150, position: "center"),
         replacements: [
             Replacement(say: "new paragraph", insert: "\n\n"),
             Replacement(say: "new line", insert: "\n"),
@@ -401,18 +413,19 @@ final class HUD {
     // Toggle subviews for the active mode (text shows editor; minimal shows the
     // orb on a transparent background so it floats).
     private func applyMode() {
-        let minimal = CONFIG.minimal
-        orbHost.isHidden = !minimal
-        scroll.isHidden = minimal
-        overlay.isHidden = minimal
-        bg.isHidden = minimal            // transparent film in minimal → orb floats
-        if minimal { cueLabel.isHidden = true }
+        let orb = CONFIG.orbMode
+        orbHost.isHidden = !orb
+        scroll.isHidden = orb
+        overlay.isHidden = orb
+        bg.isHidden = orb                // transparent film in orb mode → it floats
+        if orb { cueLabel.isHidden = true }
     }
 
-    // Feed the live mic level (0…1) to the orb, smoothed fast-attack / slow-release.
+    // Feed the live mic level (0…1) to the orb. Fast attack; a middle-ground
+    // release (~400ms) — snappier than the original ~800ms, not as abrupt as 200ms.
     func setLevel(_ v: Float) {
         let target = CGFloat(max(0, min(1, v)))
-        orbLevel += (target - orbLevel) * (target > orbLevel ? 0.5 : 0.15)
+        orbLevel += (target - orbLevel) * (target > orbLevel ? 0.6 : 0.3)
         orbModel.level = orbLevel
     }
 
@@ -465,6 +478,21 @@ final class HUD {
         let size = panel.frame.size
         let x = f.minX + (f.width - size.width) / 2
         let y = f.minY + (f.height - size.height) / 2   // dead center
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // Place the orb at one of the 9-grid anchors from orb.position
+    // (e.g. "top-center", "bottom-right", "center-left", "center").
+    private func positionOrb() {
+        guard let screen = NSScreen.main else { return }
+        let vf = screen.visibleFrame, sz = panel.frame.size, m: CGFloat = 24
+        let a = CONFIG.orbPosition.lowercased()
+        let x: CGFloat = a.contains("left")  ? vf.minX + m
+                       : a.contains("right") ? vf.maxX - sz.width - m
+                       :                        vf.midX - sz.width / 2
+        let y: CGFloat = a.contains("top")    ? vf.maxY - sz.height - m
+                       : a.contains("bottom") ? vf.minY + m
+                       :                         vf.midY - sz.height / 2
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
@@ -600,16 +628,16 @@ final class HUD {
         switch CONFIG.mode {
         case "off":
             return                                     // show nothing; dictate → paste only
-        case "minimal":
+        case "orb":
             applyMode()
             let s = CONFIG.orbSize                      // fixed ambient indicator (own config)
             orbLevel = 0; orbModel.level = 0
             orbHost.rootView = RawVoiceHost(model: orbModel, diameter: s)
             panel.setContentSize(NSSize(width: s, height: s))
-            positionCentered()
-            panel.isMovableByWindowBackground = false   // fixed + centered (per RawVoice handoff)
-            panel.orderFrontRegardless()                // don't steal focus in minimal mode
-        default:                                       // "text"
+            positionOrb()                               // anchored per orb.position
+            panel.isMovableByWindowBackground = false   // fixed indicator (per RawVoice handoff)
+            panel.orderFrontRegardless()                // don't steal focus in orb mode
+        default:                                       // "hud"
             applyMode()
             panel.isMovableByWindowBackground = false
             panel.setContentSize(NSSize(width: CGFloat(CONFIG.hud.width), height: CGFloat(CONFIG.hud.height)))
@@ -843,7 +871,6 @@ final class Controller {
     }
 
     func registerHotKey() {
-        // ctrl+alt+S  (kVK_ANSI_S = 1)
         var ref: EventHotKeyRef?
         let id = EventHotKeyID(signature: OSType(0x53574B59), id: 1)  // 'SWKY'
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
@@ -852,12 +879,44 @@ final class Controller {
             DispatchQueue.main.async { gController?.toggle() }
             return noErr
         }, 1, &spec, nil, nil)
-        let mods = UInt32(controlKey | optionKey)
-        let status = RegisterEventHotKey(UInt32(kVK_ANSI_S), mods, id,
-                            GetApplicationEventTarget(), 0, &ref)
+        // Parse the configured hotkey; fall back to ctrl+alt+S on anything invalid.
+        let parsed = Self.parseHotKey(CONFIG.hotkeySpec)
+        let (key, mods) = parsed ?? (UInt32(kVK_ANSI_S), UInt32(controlKey | optionKey))
+        let note = parsed == nil ? " — UNPARSEABLE, using default ctrl+alt+s" : ""
+        let status = RegisterEventHotKey(key, mods, id, GetApplicationEventTarget(), 0, &ref)
         hotKeyRef = ref
-        NSLog("speakwrite: RegisterEventHotKey status=\(status) (0=ok; nonzero=already taken)")
+        NSLog("speakwrite: hotkey '\(CONFIG.hotkeySpec)'\(note) status=\(status) (0=ok; nonzero=already taken)")
     }
+
+    // Parse e.g. "ctrl+alt+s" / "cmd+shift+space" into (keycode, Carbon modifiers).
+    // Returns nil if no recognizable key token is present.
+    static func parseHotKey(_ spec: String) -> (UInt32, UInt32)? {
+        var mods: UInt32 = 0
+        var keyCode: UInt32? = nil
+        for raw in spec.lowercased().split(separator: "+") {
+            let t = raw.trimmingCharacters(in: .whitespaces)
+            switch t {
+            case "cmd", "command", "⌘":          mods |= UInt32(cmdKey)
+            case "ctrl", "control", "⌃":         mods |= UInt32(controlKey)
+            case "alt", "opt", "option", "⌥":    mods |= UInt32(optionKey)
+            case "shift", "⇧":                   mods |= UInt32(shiftKey)
+            default:                             keyCode = keyCodeMap[t]
+            }
+        }
+        guard let k = keyCode else { return nil }
+        return (k, mods)
+    }
+
+    private static let keyCodeMap: [String: UInt32] = [
+        "a":0,"s":1,"d":2,"f":3,"h":4,"g":5,"z":6,"x":7,"c":8,"v":9,"b":11,"q":12,
+        "w":13,"e":14,"r":15,"y":16,"t":17,"o":31,"u":32,"i":34,"p":35,"l":37,
+        "j":38,"k":40,"n":45,"m":46,
+        "1":18,"2":19,"3":20,"4":21,"5":23,"6":22,"7":26,"8":28,"9":25,"0":29,
+        "space":49,"return":36,"enter":36,"tab":48,"escape":53,"esc":53,
+        // punctuation / symbols
+        "`":50,"grave":50,"backtick":50,"-":27,"minus":27,"=":24,"equal":24,
+        "[":33,"]":30,";":41,"'":39,",":43,".":47,"period":47,"/":44,"slash":44,"\\":42,
+    ]
 }
 
 var gController: Controller?

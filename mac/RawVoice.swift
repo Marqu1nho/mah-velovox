@@ -167,69 +167,53 @@ struct RawVoiceView: View {
     private func draw(_ ctx: GraphicsContext, _ size: CGSize, _ t: Double) {
         let lvl = max(0, min(1, level))
         let D = min(diameter, min(size.width, size.height))
-        let R = D / 2
+        let R = D / 2 * 0.66                                 // emblem scale (shrunk-in, then +20%)
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
-        let sw = max(0.6, D / 220)                          // stroke scale
+        let sw = max(0.6, D / 220)                          // stroke scale (kept off D so lines stay thin)
 
-        // Radii — all derived from R so proportions hold at any diameter.
-        let coreR = (0.28 + 0.10 * lvl) * R
-        let ringR = (0.40 + 0.05 * lvl) * R
-        let waveR = (0.60 + 0.08 * lvl) * R
+        // Radii — derived from R so proportions hold at any size. No center
+        // nucleus (it read as a fried-egg yolk). A steady anchor circle + a
+        // responsive wobble around it carry the identity; dashes break outward
+        // from just inside the ring so they read as emerging from behind it.
+        // Both rings share a radius at REST, so you see one clean circle when quiet.
+        // The voice-driven wobble (below) is the ONLY thing that pushes the squiggle
+        // out and reveals it as a separate line when you speak.
+        let ringR = 0.42 * R                    // steady anchor — fixed
+        let waveR = (0.42 + 0.04 * lvl) * R      // reactive — coincident at rest, expands on voice
         let reach = dashReachRatio * R
 
-        // 1. Single faint dashed ring (slow drift).
-        let ringPath = Path(ellipseIn: CGRect(x: c.x - ringR, y: c.y - ringR,
-                                              width: ringR * 2, height: ringR * 2))
-        ctx.stroke(ringPath,
-                   with: .color(lineColor.opacity(0.18)),
-                   style: StrokeStyle(lineWidth: 1 * sw, dash: [2, 7], dashPhase: t * 8))
-
-        // 2. Breathing core blob.
-        let breath = 0.5 + 0.5 * sin(t * 1.6)
-        var blob = Path()
-        let steps = 90
-        for i in 0...steps {
-            let ang = Double(i) / Double(steps) * .pi * 2
-            let wob = 1
-                + 0.045 * sin(ang * 3 + t * 1.2)
-                + 0.030 * sin(ang * 5 - t * 0.9)
-                + Double(lvl) * 0.06 * sin(ang * 2 + t * 4.0)
-            let r = coreR * CGFloat(wob) * CGFloat(1 + breath * 0.02)
-            let p = point(c, ang, r)
-            if i == 0 { blob.move(to: p) } else { blob.addLine(to: p) }
-        }
-        blob.closeSubpath()
-        ctx.fill(blob, with: .color(lineColor.opacity(0.05 + Double(lvl) * 0.10)))
-        ctx.stroke(blob, with: .color(lineColor.opacity(0.92)), lineWidth: 1.6 * sw)
-
-        // 3. Outer reactive waveform.
+        // 1. Reactive waveform — wobbles MORE the louder you are.
         var wave = Path()
         let wsteps = 200
         for i in 0...wsteps {
             let ang = Double(i) / Double(wsteps) * .pi * 2
-            var wob = 0.014 * sin(ang * 3 + t * 1.4)
-            wob += Double(lvl) * (0.061 * sin(ang * 6 + t * 5.0)
-                                + 0.033 * sin(ang * 11 - t * 3.0))
+            var wob = 0.012 * sin(ang * 3 + t * 1.4)
+            wob += Double(lvl) * (0.10 * sin(ang * 6 + t * 5.0)
+                                + 0.05 * sin(ang * 11 - t * 3.0))
             let r = waveR + CGFloat(wob) * R
             let p = point(c, ang, r)
             if i == 0 { wave.move(to: p) } else { wave.addLine(to: p) }
         }
         wave.closeSubpath()
-        ctx.stroke(wave, with: .color(lineColor.opacity(0.32 + Double(lvl) * 0.4)),
+        // Thin line, but a solid baseline so it's real at rest (not a faint sketch); brightens on voice.
+        ctx.stroke(wave, with: .color(lineColor.opacity(0.6 + Double(lvl) * 0.35)),
                    lineWidth: 1.1 * sw)
 
-        // 4. Continuous flash-out dashes while speaking.
-        //    Each emitter always has one dash in flight; it spawns just inside the
-        //    waveform ring, crosses it, and fades out within `reach`. The whole
-        //    field's brightness scales with how loudly the user is speaking, so it
-        //    fades in/out smoothly at speech boundaries instead of popping.
-        let gate = smoothstep(0.08, 0.18, lvl)              // voice presence 0...1
+        // 2. Steady anchor circle — the consistent, deliberate boundary; its
+        //    steadiness is the "sense of self" and never morphs into a yolk.
+        let ring = Path(ellipseIn: CGRect(x: c.x - ringR, y: c.y - ringR,
+                                          width: ringR * 2, height: ringR * 2))
+        ctx.stroke(ring, with: .color(lineColor.opacity(0.82)), lineWidth: 2.6 * sw)
+
+        // 3. Flash-out dashes — spawn just INSIDE the OUTER wobble ring (~95%),
+        //    cross it, fade out within `reach`. Brightest as they emerge → "behind".
+        let gate = smoothstep(0.08, 0.18, lvl)
         if gate > 0.001 {
-            let emitters = Int((0.18 + 0.64 * density) * 100) // density 0.5 → 50
-            let inset = 0.02 * R
+            let emitters = Int((0.18 + 0.64 * density) * 100)
+            let inset = 0.05 * waveR                          // start ~95% of the way out
             for i in 0..<emitters {
                 let ang   = rnd(i, 1) * .pi * 2
-                let cps   = 1.8 + rnd(i, 3) * 1.6            // travel cycles / sec
+                let cps   = 1.8 + rnd(i, 3) * 1.6
                 let frac  = ((t * cps) + rnd(i, 4)).truncatingRemainder(dividingBy: 1)
                 let len   = (0.02 + rnd(i, 5) * 0.02) * R
                 let r0    = waveR - inset + CGFloat(frac) * (reach + inset)
@@ -238,8 +222,7 @@ struct RawVoiceView: View {
                 var d = Path()
                 d.move(to: point(c, ang, r0))
                 d.addLine(to: point(c, ang, r0 + len))
-                ctx.stroke(d, with: .color(lineColor.opacity(alpha)),
-                           lineWidth: 1.1 * sw)
+                ctx.stroke(d, with: .color(lineColor.opacity(alpha)), lineWidth: 1.1 * sw)
             }
         }
     }
