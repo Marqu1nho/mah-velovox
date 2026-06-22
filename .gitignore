@@ -19,6 +19,8 @@ wheels/
 mac/SpeakWrite.app/
 mac/SpeakWrite
 mac/tts_probe
+mac/ReadAloud/ReadAloud.app/
+mac/ReadAloud/ReadAloud
 
 # Throwaway probes / recordings (kept locally, not committed)
 /apple_probe

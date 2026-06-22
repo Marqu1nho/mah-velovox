@@ -1,83 +1,117 @@
-# readaloud (Hammerspoon + kokoro daemon) and the native SpeakWrite.app.
-# speakwrite is no longer a Python daemon / Hammerspoon module — it's mac/SpeakWrite.app.
+# Native macOS apps:
+#   ReadAloud  (mac/ReadAloud/) — hotkey TTS reader. Targets: read / read-*
+#   SpeakWrite (mac/)           — hotkey dictation.   Targets: speak / speak-*
+#
+# Naming rule: the VERB says whether it recompiles.
+#   bare name (read / speak)  = launch the existing build, NO rebuild (daily driver)
+#   *-rebuild                 = recompile + launch (after you change code)
+#   *-debug                   = recompile + run in the foreground with live logs
+#   *-build                   = compile + bundle + sign only, don't launch
+#   *-stop                    = quit it
+#   *-reset                   = reset TCC permission grants + rebuild
+#
+# All launches exec the inner binary DIRECTLY (never `open`): TCC keys the
+# Accessibility/Mic grant to the direct-exec identity of these ad-hoc-signed apps,
+# and an `open` (LaunchServices) launch presents a different identity the grant
+# misses — silently breaking paste/capture. *-reset re-signs (new ad-hoc identity),
+# which can invalidate grants, so it clears them for a clean re-grant.
 
 PY     := .venv/bin/python
-HS     := /opt/homebrew/bin/hs
-STATE  := $(HOME)/.local/state
 MACDIR := mac
 APPID  := com.marco.speakwrite
 APP    := $(MACDIR)/SpeakWrite.app
+RADIR  := mac/ReadAloud
+RAID   := com.marco.readaloud
+RAAPP  := $(RADIR)/ReadAloud.app
 
 .DEFAULT_GOAL := help
-.PHONY: help restart-read reload-hs stop-read status \
-        mac mac-run mac-start mac-debug mac-kill mac-reset tts
+.PHONY: help status stop-read tts \
+        read read-rebuild read-debug read-build read-stop read-reset \
+        speak speak-rebuild speak-debug speak-build speak-stop speak-reset speak-stats
 
 help:
-	@echo "Targets:"
-	@echo "  make restart-read   - bounce readaloud daemon + reload Hammerspoon"
-	@echo "  make reload-hs      - reload Hammerspoon only"
-	@echo "  make stop-read      - stop the readaloud daemon"
-	@echo "  make status         - show which daemons are running"
-	@echo "  --- native SpeakWrite.app ---"
-	@echo "  make mac            - compile + bundle + ad-hoc sign SpeakWrite.app"
-	@echo "  make mac-start      - launch the EXISTING build, no rebuild (keeps permissions). Daily driver."
-	@echo "  make mac-run        - (re)build, then launch it (ctrl+alt+S to dictate)"
-	@echo "  make mac-debug      - (re)build, run in foreground with logs"
-	@echo "  make mac-kill       - quit a running SpeakWrite"
-	@echo "  make mac-reset      - reset Mic+Accessibility grants, then rebuild"
-	@echo "  make tts            - TTS probe: hear AVSpeechSynthesizer voices (readaloud-native test)"
+	@echo "ReadAloud (TTS reader) — config at ~/.config/readaloud/config.json"
+	@echo "  make read           launch the current build, NO rebuild — daily driver"
+	@echo "  make read-rebuild   recompile + launch (use after changing code)"
+	@echo "  make read-debug     recompile + run in foreground with live logs"
+	@echo "  make read-build     compile + bundle + sign only (don't launch)"
+	@echo "  make read-stop      quit it"
+	@echo "  make read-reset     reset Accessibility grant + rebuild"
+	@echo ""
+	@echo "SpeakWrite (dictation)"
+	@echo "  make speak          launch the current build, NO rebuild — daily driver"
+	@echo "  make speak-rebuild  recompile + launch (use after changing code)"
+	@echo "  make speak-debug    recompile + run in foreground with live logs"
+	@echo "  make speak-build    compile + bundle + sign only (don't launch)"
+	@echo "  make speak-stop     quit it"
+	@echo "  make speak-reset    reset Mic+Accessibility grants + rebuild"
+	@echo "  make speak-stats    dictation WPM stats (7-day / last-50 / all-time)"
+	@echo ""
+	@echo "Misc"
+	@echo "  make tts            TTS probe: hear/list AVSpeechSynthesizer voices"
+	@echo "  make stop-read      stop the legacy Python readaloud daemon (being retired)"
+	@echo "  make status         show whether the legacy daemon is running"
 
-restart-read: stop-read
-	@mkdir -p $(STATE)/readaloud
-	@nohup $(PY) -m readaloud.daemon > $(STATE)/readaloud/daemon.out 2>&1 &
-	@echo "readaloud daemon launched (log: $(STATE)/readaloud/daemon.out)"
-	@$(MAKE) --no-print-directory reload-hs
+# --- ReadAloud ---
+read-build:
+	@$(RADIR)/build.sh
 
-reload-hs:
-	@$(HS) -c "hs.reload()" >/dev/null 2>&1 || true
-	@echo "Hammerspoon reloaded"
+read-stop:
+	@pkill -x ReadAloud 2>/dev/null || true
 
-stop-read:
-	@pkill -f readaloud.daemon 2>/dev/null || true
-	@echo "readaloud daemon stopped"
+read: read-stop
+	@nohup $(RAAPP)/Contents/MacOS/ReadAloud >/dev/null 2>&1 &
+	@echo "ReadAloud launched from the existing build (no rebuild). Select text + hotkey to read."
 
-status:
-	@pgrep -fl readaloud.daemon || echo "readaloud: not running"
+read-rebuild: read-stop read-build
+	@nohup $(RAAPP)/Contents/MacOS/ReadAloud >/dev/null 2>&1 &
+	@echo "ReadAloud rebuilt + launched. Select text + hotkey to read."
 
-# --- native SpeakWrite.app: compile + bundle + sign, all here so signing never
-#     has to be done by hand. mac-reset clears TCC grants (re-signing changes the
-#     ad-hoc identity, which can invalidate Mic/Accessibility) so re-granting is clean.
-mac:
+read-debug: read-stop read-build
+	@echo "running ReadAloud in foreground — ctrl+C to stop. logs below:"
+	@$(RAAPP)/Contents/MacOS/ReadAloud
+
+read-reset: read-stop
+	@tccutil reset Accessibility $(RAID) 2>/dev/null || true
+	@$(RADIR)/build.sh
+	@echo "Accessibility grant reset + rebuilt. Run 'make read' and re-grant Accessibility."
+
+# --- SpeakWrite ---
+speak-build:
 	@$(MACDIR)/build.sh
 
-mac-kill:
+speak-stop:
 	@pkill -x SpeakWrite 2>/dev/null || true
 
-mac-run: mac-kill mac
-	@nohup $(APP)/Contents/MacOS/SpeakWrite >/dev/null 2>&1 &
-	@echo "SpeakWrite launched (no dock icon). Press ctrl+alt+S to dictate."
-
-# Launch the EXISTING build without recompiling/re-signing. Launches the inner
-# binary DIRECTLY (detached) rather than via `open` — TCC keys the Accessibility
-# grant to the direct-exec identity for this ad-hoc-signed app, and an `open`
-# (LaunchServices) launch presents a different identity that the grant misses,
-# silently breaking paste. Daily-driver command when code hasn't changed.
-mac-start: mac-kill
+speak: speak-stop
 	@nohup $(APP)/Contents/MacOS/SpeakWrite >/dev/null 2>&1 &
 	@echo "SpeakWrite launched from the existing build (no rebuild). ctrl+alt+S to dictate."
 
-mac-debug: mac-kill mac
-	@echo "running in foreground — ctrl+C to stop. logs below:"
+speak-rebuild: speak-stop speak-build
+	@nohup $(APP)/Contents/MacOS/SpeakWrite >/dev/null 2>&1 &
+	@echo "SpeakWrite rebuilt + launched. ctrl+alt+S to dictate."
+
+speak-debug: speak-stop speak-build
+	@echo "running SpeakWrite in foreground — ctrl+C to stop. logs below:"
 	@$(APP)/Contents/MacOS/SpeakWrite
 
-mac-reset: mac-kill
+speak-reset: speak-stop
 	@tccutil reset Microphone $(APPID) 2>/dev/null || true
 	@tccutil reset Accessibility $(APPID) 2>/dev/null || true
 	@$(MACDIR)/build.sh
-	@echo "TCC grants reset + rebuilt. Run 'make mac-run' and re-grant Mic + Accessibility."
+	@echo "TCC grants reset + rebuilt. Run 'make speak' and re-grant Mic + Accessibility."
 
-# TTS probe — hear AVSpeechSynthesizer (for the readaloud-native question). Speaks
-# a paragraph + lists voices. Pick a voice: ./mac/tts_probe <name>  (see file header).
+speak-stats:
+	@$(PY) sw_stats.py
+
+# --- misc ---
 tts:
 	@xcrun -sdk macosx swiftc $(MACDIR)/tts_probe.swift -o $(MACDIR)/tts_probe
 	@./$(MACDIR)/tts_probe
+
+stop-read:
+	@pkill -f readaloud.daemon 2>/dev/null || true
+	@echo "legacy readaloud daemon stopped"
+
+status:
+	@pgrep -fl readaloud.daemon || echo "legacy readaloud daemon: not running"
