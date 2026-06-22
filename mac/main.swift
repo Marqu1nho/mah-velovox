@@ -14,6 +14,7 @@ import SwiftUI
 import Combine
 import Speech
 import AVFoundation
+import CoreAudio
 import Carbon.HIToolbox
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,10 @@ struct Replacement: Codable { let say: String; let insert: String }
 struct HUDConfig: Codable {
     var alpha: Double; var fontSize: Double; var width: Double; var height: Double
     var x: Double? = nil; var y: Double? = nil
+    // commitOnly: when true the HUD NEVER shows the dim volatile/interim text —
+    // only finalized (committed) words appear, one color. An experiment to see if
+    // killing the gray-text jitter recovers the "fast" feeling of orb mode.
+    var commitOnly: Bool? = nil
 }
 // MINIMAL-mode (orb) config — kept SEPARATE from HUDConfig so the two modes never
 // borrow each other's geometry (the bug where a tiny orb window carried into text).
@@ -38,6 +43,37 @@ struct OrbConfig: Codable {
     var size: Double
     var position: String? = nil   // 9-grid anchor: top-left … center … bottom-right
 }
+// Start/stop CUES — the confirmation the user is used to from paid dictation apps.
+// `sound` is the master switch; `start`/`stop` are macOS system-sound NAMES
+// (Tink, Pop, Glass, Purr, Ping, Bottle, Hero, Morse, Submarine, …) — empty/absent
+// = silent. `bloom` makes the orb breathe once on start so blob mode (which has no
+// "listening…" text) gets a subtle VISUAL "go ahead" too.
+struct CueConfig: Codable {
+    var sound: Bool? = nil
+    var start: String? = nil
+    var stop: String? = nil
+    var volume: Double? = nil   // 0…1
+    var bloom: Bool? = nil
+}
+
+// Smart WPM metrics. We measure SPEAKING time, not recording time: silence
+// beyond `silenceGraceSeconds` is treated as thinking and excluded, so the WPM
+// reflects how fast you actually talk. `voiceThreshold` is on the 0…1 mic level.
+struct MetricsConfig: Codable {
+    var enabled: Bool? = nil
+    var silenceGraceSeconds: Double? = nil
+    var voiceThreshold: Double? = nil
+    var flash: Bool? = nil           // brief "142 wpm" toast after each session
+}
+
+// Audio-route nudges. `warnBluetoothInput`: when the mic is a Bluetooth device
+// (forced into mono ~16 kHz "call mode" / HFP — it CAN'T do hi-fi output and mic
+// at once), flash a one-time nudge to switch to a wired/built-in mic for clearer
+// transcription. Detects the CONDITION (BT transport), not any specific device,
+// so it helps anyone in the same situation.
+struct AudioConfig: Codable {
+    var warnBluetoothInput: Bool? = nil
+}
 
 struct Config: Codable {
     var locale: String
@@ -45,6 +81,9 @@ struct Config: Codable {
     var hotkey: String? = nil        // e.g. "ctrl+alt+s"; default if absent
     var hud: HUDConfig
     var orb: OrbConfig? = nil
+    var cue: CueConfig? = nil
+    var metrics: MetricsConfig? = nil
+    var audio: AudioConfig? = nil
     var replacements: [Replacement]
 
     // Canonical mode. Accepts the new names (hud/orb) and the old ones
@@ -61,13 +100,27 @@ struct Config: Codable {
     var orbSize: CGFloat { CGFloat(orb?.size ?? 150) }
     var orbPosition: String { orb?.position ?? "center" }
     var hotkeySpec: String { hotkey ?? "ctrl+alt+s" }
+    var cueSound: Bool { cue?.sound ?? true }
+    var cueStart: String { cue?.start ?? "Tink" }   // subtle "you can talk now"
+    var cueStop: String? { cue?.stop }              // nil/empty → silent on paste
+    var cueVolume: Float { Float(cue?.volume ?? 0.5) }
+    var cueBloom: Bool { cue?.bloom ?? true }
+    var hudCommitOnly: Bool { hud.commitOnly ?? false }
+    var metricsEnabled: Bool { metrics?.enabled ?? true }
+    var metricSilenceGrace: Double { metrics?.silenceGraceSeconds ?? 1.0 }
+    var metricVoiceThreshold: Double { metrics?.voiceThreshold ?? 0.15 }
+    var metricsFlash: Bool { metrics?.flash ?? true }
+    var warnBluetoothInput: Bool { audio?.warnBluetoothInput ?? true }
 
     static let fallback = Config(
         locale: "en-US",
         displayMode: "hud",
         hotkey: "ctrl+alt+s",
-        hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160),
+        hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160, commitOnly: false),
         orb: OrbConfig(size: 150, position: "center"),
+        cue: CueConfig(sound: true, start: "Tink", stop: "", volume: 0.5, bloom: true),
+        metrics: MetricsConfig(enabled: true, silenceGraceSeconds: 1.0, voiceThreshold: 0.15, flash: true),
+        audio: AudioConfig(warnBluetoothInput: true),
         replacements: [
             Replacement(say: "new paragraph", insert: "\n\n"),
             Replacement(say: "new line", insert: "\n"),
@@ -290,6 +343,8 @@ final class HUD {
     private let orbModel = OrbLevel()
     private let orbHost: NSHostingView<RawVoiceHost>
     private var orbLevel: CGFloat = 0    // smoothed (fast attack / slow release)
+    private var bloomLevel: CGFloat = 0  // one-shot start "breath", max'd with mic level
+    private var bloomTimer: Timer?
     private let cueLabel = PassthroughLabel(labelWithString: "✓ Copied")
     private let fontSize = CGFloat(CONFIG.hud.fontSize)
     private var editing = false   // false until you click/arrow in; caret hidden
@@ -426,7 +481,24 @@ final class HUD {
     func setLevel(_ v: Float) {
         let target = CGFloat(max(0, min(1, v)))
         orbLevel += (target - orbLevel) * (target > orbLevel ? 0.6 : 0.3)
-        orbModel.level = orbLevel
+        orbModel.level = max(orbLevel, bloomLevel)   // bloom wins while it's still up
+    }
+
+    // One gentle "breath" the instant recording starts: ramp the orb out and back
+    // over ~0.9s (sin peaks at the midpoint) so blob mode confirms "I'm awake, go
+    // ahead" even before you speak. Maxed with the live mic level so an immediate
+    // start still reads. Orb-mode only; no-op otherwise.
+    func bloom() {
+        guard CONFIG.orbMode, CONFIG.cueBloom else { return }
+        bloomTimer?.invalidate()
+        let t0 = Date(); let dur = 0.9
+        bloomTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] tm in
+            guard let self else { tm.invalidate(); return }
+            let p = min(1, Date().timeIntervalSince(t0) / dur)
+            self.bloomLevel = CGFloat(sin(.pi * p)) * 0.6
+            self.orbModel.level = max(self.orbLevel, self.bloomLevel)
+            if p >= 1 { tm.invalidate(); self.bloomLevel = 0 }
+        }
     }
 
     // Cmd+C with no selection: copy the whole edited buffer to the clipboard as a
@@ -548,7 +620,9 @@ final class HUD {
         editing = false
         textView.insertionPointColor = .clear   // hide caret until you engage
         textView.string = ""
-        setVolatile("listening…")
+        // commit-only: no dim prompt either — the box starts empty and fills with
+        // committed words only (the start cue already signals "listening").
+        setVolatile(CONFIG.hudCommitOnly ? "" : "listening…")
     }
 
     // Reveal the caret + mark that the user has taken edit control.
@@ -674,6 +748,201 @@ enum Replacements {
             out = re.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
         }
         return out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cues — a soft chime on start ("you can talk now") and optionally on stop. The
+// confirmation paid dictation apps give; here it works in EVERY mode, including
+// "off", which otherwise has no feedback at all. System sounds are cached and
+// resolved by name from /System/Library/Sounds; a missing name logs and no-ops.
+// ---------------------------------------------------------------------------
+enum Cue {
+    private static var cache: [String: NSSound] = [:]
+    private static func play(_ name: String?) {
+        guard CONFIG.cueSound, let name, !name.isEmpty else { return }
+        guard let s = cache[name] ?? NSSound(named: NSSound.Name(name)) else {
+            NSLog("speakwrite: no system sound named '\(name)' (see /System/Library/Sounds)"); return
+        }
+        cache[name] = s
+        s.volume = CONFIG.cueVolume
+        if s.isPlaying { s.stop() }
+        s.play()
+    }
+    static func start() { play(CONFIG.cueStart) }
+    static func stop()  { play(CONFIG.cueStop) }
+}
+
+// ---------------------------------------------------------------------------
+// Audio route inspection. A Bluetooth headset can't be a hi-fi speaker AND a mic
+// at once (A2DP is output-only; using the mic forces mono ~16 kHz HFP "call
+// mode"), so "input transport is Bluetooth" reliably means degraded capture.
+// We read the default input device's transport type via Core Audio.
+// ---------------------------------------------------------------------------
+enum AudioRoute {
+    static func inputIsBluetooth() -> Bool {
+        guard let dev = defaultInputDevice() else { return false }
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &transport) == noErr else { return false }
+        return transport == kAudioDeviceTransportTypeBluetooth
+            || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    private static func defaultInputDevice() -> AudioDeviceID? {
+        var dev = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &dev) == noErr, dev != 0 else { return nil }
+        return dev
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Smart WPM — counts SPEAKING time, not wall-clock. Fed the same 0…1 mic level
+// that drives the orb: each sample's elapsed slice counts toward speaking time
+// when voiced; during silence it still counts up to `grace` (so natural between-
+// word pauses don't inflate WPM), but silence BEYOND grace is dropped as thinking.
+// On stop, words / (speakingSeconds/60) → the rate at which you actually talk.
+// ---------------------------------------------------------------------------
+struct Metric: Codable {
+    let date: String; let words: Int
+    let speakingSeconds: Double; let totalSeconds: Double; let wpm: Double
+}
+
+final class WPMMeter {
+    private var speaking: TimeInterval = 0
+    private var total: TimeInterval = 0
+    private var silenceRun: TimeInterval = 0
+    private var last: Date?
+
+    func reset() { speaking = 0; total = 0; silenceRun = 0; last = nil }
+
+    // Call on every mic-level sample (raw normalized 0…1, on the main thread).
+    func sample(level: Float) {
+        let now = Date()
+        defer { last = now }
+        guard let prev = last else { return }
+        let dt = now.timeIntervalSince(prev)
+        guard dt > 0, dt < 1 else { return }   // ignore stalls / huge gaps
+        total += dt
+        if Double(level) >= CONFIG.metricVoiceThreshold {
+            speaking += dt; silenceRun = 0
+        } else {
+            silenceRun += dt
+            if silenceRun <= CONFIG.metricSilenceGrace { speaking += dt }  // bridge short pauses
+        }
+    }
+
+    // Build a metric for `words` spoken; nil if disabled or too little to be real.
+    func finish(words: Int) -> Metric? {
+        guard CONFIG.metricsEnabled, words > 0, speaking >= 0.5 else { return nil }
+        let wpm = Double(words) / (speaking / 60.0)
+        let iso = ISO8601DateFormatter().string(from: Date())
+        return Metric(date: iso, words: words,
+                      speakingSeconds: (speaking * 10).rounded() / 10,
+                      totalSeconds: (total * 10).rounded() / 10,
+                      wpm: wpm.rounded())
+    }
+}
+
+// Append-only per-session metrics log (JSONL), next to config.json.
+enum Metrics {
+    private static var fileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/speakwrite/metrics.jsonl")
+    }
+    static func append(_ m: Metric) {
+        guard let line = try? JSONEncoder().encode(m) else { return }
+        var data = line; data.append(0x0A)   // newline
+        let url = fileURL
+        if let fh = try? FileHandle(forWritingTo: url) {
+            defer { try? fh.close() }
+            fh.seekToEndOfFile(); fh.write(data)
+        } else {
+            try? data.write(to: url)          // first session creates the file
+        }
+        NSLog("speakwrite: \(Int(m.wpm)) wpm (\(m.words) words / \(m.speakingSeconds)s speaking of \(m.totalSeconds)s total) -> metrics.jsonl")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A tiny non-interactive toast that flashes the just-finished session's WPM,
+// bottom-center. Standalone (its own panel) so it shows in EVERY mode — the HUD
+// is already hidden by the time we paste, and orb/off have no text surface.
+// Non-activating + ignoresMouseEvents so it never disturbs the paste target.
+// ---------------------------------------------------------------------------
+final class Toast {
+    private let panel: NSPanel
+    private let bg: NSView
+    private let label = NSTextField(labelWithString: "")
+    private var dismissAt: Date?   // for overlapping flashes: latest one owns dismissal
+
+    init() {
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 168, height: 56),
+                        styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        panel.level = .screenSaver
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+
+        bg = NSView(frame: panel.contentView!.bounds)
+        bg.autoresizingMask = [.width, .height]
+        bg.wantsLayer = true
+        bg.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.7).cgColor
+        bg.layer?.cornerRadius = 16
+        panel.contentView!.addSubview(bg)
+
+        label.autoresizingMask = [.width, .height]
+        label.alignment = .center
+        label.textColor = .white
+        label.drawsBackground = false
+        label.isBezeled = false
+        label.isEditable = false
+        label.maximumNumberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        label.cell?.wraps = true
+        bg.addSubview(label)
+    }
+
+    // Big, brief — the per-session WPM glance.
+    func flashWPM(_ text: String) { show(text, size: NSSize(width: 168, height: 56), fontSize: 24, weight: .semibold, hold: 1.3) }
+    // Wider, longer — a wrapped advisory line (e.g. the Bluetooth-mic nudge).
+    func note(_ text: String)     { show(text, size: NSSize(width: 440, height: 92), fontSize: 14, weight: .medium, hold: 3.5) }
+
+    private func show(_ text: String, size: NSSize, fontSize: CGFloat, weight: NSFont.Weight, hold: TimeInterval) {
+        label.stringValue = text
+        label.font = .systemFont(ofSize: fontSize, weight: weight)
+        panel.setContentSize(size)
+        bg.frame = NSRect(origin: .zero, size: size)
+        label.frame = bg.bounds.insetBy(dx: 18, dy: 12)
+        if let screen = NSScreen.main {
+            let vf = screen.visibleFrame
+            panel.setFrameOrigin(NSPoint(x: vf.midX - size.width / 2, y: vf.minY + 120))
+        }
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { c in c.duration = 0.15; panel.animator().alphaValue = 1 }
+        let deadline = Date().addingTimeInterval(hold)
+        dismissAt = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
+            guard let self, self.dismissAt == deadline else { return }   // a newer flash superseded us
+            NSAnimationContext.runAnimationGroup({ c in c.duration = 0.5; self.panel.animator().alphaValue = 0 },
+                completionHandler: { if self.dismissAt == deadline { self.panel.orderOut(nil) } })
+        }
     }
 }
 
@@ -824,7 +1093,10 @@ enum Paster {
 final class Controller {
     private let hud = HUD()
     private let dictation = Dictation()
+    private let meter = WPMMeter()
+    private let toast = Toast()
     private var dictating = false
+    private var warnedBluetooth = false   // nudge once per contiguous BT-input state
     private var hotKeyRef: EventHotKeyRef?
     private var previousApp: NSRunningApplication?
 
@@ -834,22 +1106,32 @@ final class Controller {
             if isFinal {
                 self.hud.appendFinal(text)
                 self.hud.setVolatile("")
-            } else {
-                self.hud.setVolatile(text)
+            } else if !CONFIG.hudCommitOnly {
+                self.hud.setVolatile(text)   // skip the live gray guess in commit-only
             }
         }
-        dictation.onLevel = { [weak self] level in self?.hud.setLevel(level) }
+        dictation.onLevel = { [weak self] level in
+            self?.hud.setLevel(level)
+            self?.meter.sample(level: level)   // smart-WPM voice-activity sampling
+        }
     }
 
     func toggle() {
         NSLog("speakwrite: hotkey fired (was dictating=\(dictating))")
         if dictating {
             dictating = false
+            Cue.stop()                 // soft "captured" confirmation (silent unless configured)
             dictation.stop { [weak self] in
                 guard let self else { return }
                 let edited = self.hud.editableText().trimmingCharacters(in: .whitespacesAndNewlines)
                 let wasKey = self.hud.panelIsKey
                 NSLog("speakwrite: pasting \(edited.count) chars (edited; panelWasKey=\(wasKey))")
+                // Smart WPM: count words in the final transcript over speaking time.
+                let words = edited.split(whereSeparator: { $0.isWhitespace }).count
+                if let m = self.meter.finish(words: words) {
+                    Metrics.append(m)
+                    if CONFIG.metricsFlash { self.toast.flashWPM("\(Int(m.wpm)) wpm") }
+                }
                 // If the user clicked in to edit, the HUD took key focus. Hide it
                 // and restore the original app before pasting so ⌘V lands there.
                 self.hud.hide()
@@ -864,9 +1146,29 @@ final class Controller {
         } else {
             dictating = true
             previousApp = NSWorkspace.shared.frontmostApplication
+            meter.reset()
             hud.reset()
             hud.show()
+            Cue.start()      // "you can talk now" chime — works in every mode, even off
+            hud.bloom()      // + a one-time orb breath so blob mode has a visual cue too
+            warnIfBluetoothMic()
             dictation.start()
+        }
+    }
+
+    // One-time nudge when the mic is a Bluetooth headset (call-mode capture). We
+    // warn once per contiguous BT state: switch away and back to re-arm, so it
+    // never nags on every dictation while you're stuck on the bad mic.
+    private func warnIfBluetoothMic() {
+        guard CONFIG.warnBluetoothInput else { return }
+        if AudioRoute.inputIsBluetooth() {
+            if !warnedBluetooth {
+                warnedBluetooth = true
+                NSLog("speakwrite: input is Bluetooth (call-mode ~16kHz) — nudging to switch mic")
+                toast.note("🎧 Your mic is a Bluetooth headset (call quality). Switch input to a built-in or wired mic for clearer transcription.")
+            }
+        } else {
+            warnedBluetooth = false
         }
     }
 
