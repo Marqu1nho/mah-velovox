@@ -18,34 +18,50 @@ enum Capture {
     /// if nothing could be captured.
     static func selection() -> String? {
         let pb = NSPasteboard.general
-        let savedChangeCount = pb.changeCount
         let savedString = pb.string(forType: .string)
+        let baseline = pb.changeCount
 
-        postCmdC()
+        // The hotkey itself (⌃⌥⌘S) holds modifiers down. If ⌃/⌥ are still pressed
+        // when we fire the synthetic ⌘C, the target app sees ⌃⌥⌘C — NOT copy — and
+        // nothing lands on the clipboard. Wait for them to lift first. This is the
+        // race behind the intermittent "no selection captured" in fast apps.
+        waitForModifiersToClear()
 
-        // Poll up to ~400ms (20ms intervals) for the target app to update the
-        // pasteboard. The target copies in its own process, so blocking our main
-        // thread here doesn't prevent it.
-        var captured: String? = nil
-        for _ in 0..<20 {
-            usleep(20_000)
-            if pb.changeCount != savedChangeCount {
-                captured = pb.string(forType: .string)
-                break
-            }
-        }
+        // Copy + poll; retry once, since the first ⌘C can still race the release.
+        var captured = copyAndPoll(pb, since: baseline)
+        if captured == nil { captured = copyAndPoll(pb, since: pb.changeCount) }
 
         // Restore the user's clipboard. If it was empty before but ⌘C populated it,
         // clear it so we don't leak the selection into an empty clipboard.
         if let saved = savedString {
             pb.clearContents()
             pb.setString(saved, forType: .string)
-        } else if pb.changeCount != savedChangeCount {
+        } else if pb.changeCount != baseline {
             pb.clearContents()
         }
 
         if let c = captured, !c.isEmpty { return c }
         return axSelectedText()
+    }
+
+    /// Fire ⌘C and poll the pasteboard up to ~500ms for a change.
+    private static func copyAndPoll(_ pb: NSPasteboard, since base: Int) -> String? {
+        postCmdC()
+        for _ in 0..<25 {
+            usleep(20_000)
+            if pb.changeCount != base { return pb.string(forType: .string) }
+        }
+        return nil
+    }
+
+    /// Block (cap ~300ms) until the control/option modifiers are released, so the
+    /// synthetic ⌘C isn't polluted into ⌃⌥⌘C by the still-held hotkey.
+    private static func waitForModifiersToClear() {
+        for _ in 0..<30 {
+            let f = CGEventSource.flagsState(.combinedSessionState)
+            if !f.contains(.maskControl) && !f.contains(.maskAlternate) { return }
+            usleep(10_000)
+        }
     }
 
     private static func postCmdC() {
