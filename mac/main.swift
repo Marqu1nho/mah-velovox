@@ -82,6 +82,12 @@ struct AudioConfig: Codable {
 struct DictationConfig: Codable {
     var punctuation: Bool? = nil
     var emoji: Bool? = nil
+    // Write mode: "formal" (default, engine casing untouched) or "casual".
+    // Casual lowercases the first word of each sentence — except words on the
+    // capitalExceptions list (matched whole-word, case-insensitive; an entry
+    // also covers its contractions, so "I" keeps I'm / I'll / I've / I'd).
+    var mode: String? = nil
+    var capitalExceptions: [String]? = nil
 }
 
 struct Config: Codable {
@@ -121,6 +127,9 @@ struct Config: Codable {
     var engineKind: String { engine == "dictation" ? "dictation" : "speech" }
     var dictationPunctuation: Bool { dictation?.punctuation ?? false }
     var dictationEmoji: Bool { dictation?.emoji ?? false }
+    var dictationMode: String { dictation?.mode ?? "formal" }
+    var dictationCasual: Bool { dictationMode == "casual" }
+    var dictationCapitalExceptions: [String] { dictation?.capitalExceptions ?? ["I"] }
     var metricsEnabled: Bool { metrics?.enabled ?? true }
     var metricSilenceGrace: Double { metrics?.silenceGraceSeconds ?? 1.0 }
     var metricVoiceThreshold: Double { metrics?.voiceThreshold ?? 0.15 }
@@ -130,7 +139,7 @@ struct Config: Codable {
     static let fallback = Config(
         locale: "en-US",
         engine: "speech",
-        dictation: DictationConfig(punctuation: false, emoji: false),
+        dictation: DictationConfig(punctuation: false, emoji: false, mode: "formal", capitalExceptions: ["I"]),
         displayMode: "hud",
         hotkey: "ctrl+alt+s",
         hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160, commitOnly: false),
@@ -684,9 +693,24 @@ final class HUD {
             let prevIsWS = prev.rangeOfCharacter(from: .whitespacesAndNewlines) != nil
             if !prevIsWS && !s.hasPrefix("\n") { piece = " " + s }
         }
+        if CONFIG.dictationCasual {
+            piece = WriteMode.casual(piece, sentenceStart: sentenceStartBefore(insertAt, in: nsStr))
+        }
         let sel = textView.selectedRange()
         ts.insert(NSAttributedString(string: piece, attributes: commAttrs), at: insertAt)
         if sel.location + sel.length <= insertAt { textView.setSelectedRange(sel) }
+    }
+
+    // Look back from `loc` over whitespace for the last committed character: a
+    // sentence opens at the document start (nothing before) or right after [.!?].
+    private func sentenceStartBefore(_ loc: Int, in str: NSString) -> Bool {
+        var k = loc
+        while k > 0 {
+            let ch = str.substring(with: NSRange(location: k - 1, length: 1))
+            if ch.rangeOfCharacter(from: .whitespacesAndNewlines) != nil { k -= 1; continue }
+            return ch == "." || ch == "!" || ch == "?"
+        }
+        return true
     }
 
     // Replace the dim tail in place with the live volatile guess.
@@ -695,6 +719,10 @@ final class HUD {
         let range = volatileRange()
         let wasAtBottom = atBottom()
         let sel = textView.selectedRange()
+        var s = s
+        if CONFIG.dictationCasual, !s.isEmpty {
+            s = WriteMode.casual(s, sentenceStart: sentenceStartBefore(range.location, in: ts.string as NSString))
+        }
         ts.replaceCharacters(in: range, with: NSAttributedString(string: s, attributes: volAttrs))
         if sel.location + sel.length <= range.location { textView.setSelectedRange(sel) }
         if wasAtBottom { textView.scrollToEndOfDocument(nil) }
@@ -781,6 +809,67 @@ enum Replacements {
             out = re.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
         }
         return out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Write mode — "casual" lowercases the first word of every sentence so prose
+// reads like a quick chat message rather than formal copy. Runs on finalized
+// text AFTER replacements, in the HUD, where the accumulated document gives the
+// sentence-boundary context that a single streamed chunk lacks.
+//
+// A sentence starts at the document start or after [.!?] + whitespace. The first
+// alphabetic word there is lowercased UNLESS it's on the exceptions list — match
+// is whole-word and case-insensitive, and compares the part before any
+// apostrophe, so a single "I" entry also spares I'm / I'll / I've / I'd.
+// "formal" mode never calls this; the engine's own casing is left as-is.
+// ---------------------------------------------------------------------------
+enum WriteMode {
+    private static let exceptions: Set<String> =
+        Set(CONFIG.dictationCapitalExceptions.map { $0.lowercased() })
+
+    private static func isException(_ word: [Character]) -> Bool {
+        let stem = word.prefix { $0 != "'" && $0 != "\u{2019}" }   // up to first apostrophe
+        return exceptions.contains(String(stem).lowercased())
+    }
+
+    // Lowercase sentence-initial words in `s`. `sentenceStart` says whether the
+    // chunk itself opens a sentence (derived from the preceding committed char).
+    static func casual(_ s: String, sentenceStart: Bool) -> String {
+        guard !s.isEmpty else { return s }
+        let chars = Array(s)
+        var out: [Character] = []
+        out.reserveCapacity(chars.count)
+        var atStart = sentenceStart
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c.isLetter {
+                if atStart {
+                    // Grab the whole word (letters + apostrophes) to test/exempt.
+                    var j = i
+                    while j < chars.count,
+                          chars[j].isLetter || chars[j] == "'" || chars[j] == "\u{2019}" { j += 1 }
+                    let word = Array(chars[i..<j])
+                    if isException(word) {
+                        out.append(contentsOf: word)
+                    } else {
+                        out.append(contentsOf: String(word[0]).lowercased())
+                        out.append(contentsOf: word[1...])
+                    }
+                    i = j
+                    atStart = false
+                    continue
+                }
+            } else if c == "." || c == "!" || c == "?" {
+                atStart = true               // next word opens a new sentence
+            }
+            // Whitespace and opening punctuation (quotes/brackets) keep `atStart`
+            // so the first real word after them is still treated as the start.
+            out.append(c)
+            i += 1
+        }
+        return String(out)
     }
 }
 
