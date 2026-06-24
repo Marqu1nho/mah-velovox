@@ -1,5 +1,6 @@
 # Build artifacts
 /VeloVox.app/
+.build/
 
 # Experiment worktrees
 .worktrees/

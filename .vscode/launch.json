@@ -1,0 +1,43 @@
+{
+  // VS Code debug configs for stepping through VeloVox's pure logic.
+  //
+  // Requires the official "Swift" extension (publisher: Swift Server Work Group /
+  // swiftlang). It contributes the "swift" debug type below, which builds the
+  // package and launches the binary under LLDB so you can set breakpoints, step,
+  // and inspect variables — no Xcode needed for this part.
+  //
+  // Easiest day-to-day: just click the "Debug" CodeLens the Swift extension shows
+  // above each XCTestCase / test method. This file is the explicit fallback.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "name": "Debug unit tests (vvtests)",
+      "program": "${workspaceFolder}/.build/debug/vvtests",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "swift: Build All"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:cust-stt}",
+      "name": "Debug vvtests",
+      "target": "vvtests",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug vvtests"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:cust-stt}",
+      "name": "Release vvtests",
+      "target": "vvtests",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release vvtests"
+    }
+  ]
+}

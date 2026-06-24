@@ -92,6 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let readAloud = ReadAloudController()
     private let speakWrite = SpeakWriteController()
     private var statusItem: NSStatusItem?
+    // Lazily created on first open; reused (the window hides on close, the
+    // controller survives) so we never leak a fresh window per menu click.
+    private var settingsWC: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         gReadAloud = readAloud
@@ -204,7 +207,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let edit = NSMenuItem(title: "Edit Config…", action: #selector(editConfig), keyEquivalent: ",")
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+
+        // Raw-JSON escape hatch for the knobs the GUI doesn't expose yet
+        // (replacements, mute lists, replace map, …). No ⌘, — that's Settings now.
+        let edit = NSMenuItem(title: "Edit Config (JSON)…", action: #selector(editConfig), keyEquivalent: "")
         edit.target = self
         menu.addItem(edit)
 
@@ -237,6 +246,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotKeys.setEnabled(now, id: HotKeyID.speakWrite)
         sender.state = now ? .on : .off
         NSLog("velovox: Dictate \(now ? "enabled" : "disabled")")
+    }
+
+    // Open the SwiftUI Settings window. An `.accessory` agent isn't a regular
+    // foreground app, so a freshly shown window won't auto-focus — we must pull
+    // VeloVox forward with NSApp.activate, then key+order-front the window. We do
+    // NOT switch to `.regular` (that would add a Dock icon and break LSUIElement).
+    @objc private func openSettings() {
+        if settingsWC == nil { settingsWC = SettingsWindowController() }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWC?.showWindow(nil)
+        settingsWC?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func editConfig() {
