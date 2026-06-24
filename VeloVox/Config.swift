@@ -49,6 +49,8 @@ struct MuteConfig: Codable {
 
 struct ReadAloudConfig: Codable {
     var voice: String?
+    var engine: String? = nil      // "avspeech" (default) or "say" (Siri-voice CLI shim)
+    var sayVoice: String? = nil    // voice name passed to `say -v` when engine == "say"
     var rate: Double?
     var hotkey: String?
     var alerts: AlertsConfig?
@@ -62,6 +64,9 @@ struct ReadAloudConfig: Codable {
 
     // --- accessors with safety-net defaults ---
     var voiceSpec: String { voice ?? "com.apple.voice.premium.en-GB.Serena" }
+    // TTS backend: "say" (Siri-voice CLI shim) or "avspeech" (AVSpeechSynthesizer, default).
+    var ttsEngine: String { engine == "say" ? "say" : "avspeech" }
+    var sayVoiceName: String { sayVoice ?? "Voice 2" }
     var speechRate: Float { Float(rate ?? 0.5) }
     var hotkeySpec: String { hotkey ?? "ctrl+alt+cmd+r" }
     var alertYPct: Double { alerts?.y_pct ?? 3.5 }
@@ -93,6 +98,8 @@ struct ReadAloudConfig: Codable {
 
     static let fallback = ReadAloudConfig(
         voice: "com.apple.voice.premium.en-GB.Serena",
+        engine: "avspeech",
+        sayVoice: "Voice 2",
         rate: 0.5,
         hotkey: "ctrl+alt+cmd+r",
         alerts: AlertsConfig(y_pct: 3.5),
@@ -161,6 +168,11 @@ struct DictationConfig: Codable {
     // Write mode: "formal" (default, engine casing untouched) or "casual".
     var mode: String? = nil
     var capitalExceptions: [String]? = nil
+    // alwaysAppearCommitted: in dictation mode, paint ALL text white (the live guess
+    // never reads as gray), because dictation holds text volatile for long stretches.
+    // Default true. false → two-tone gray/white like speech mode. (Speech mode always
+    // shows the gray volatile guess regardless of this flag.)
+    var alwaysAppearCommitted: Bool? = nil
 }
 
 struct SpeakWriteConfig: Codable {
@@ -201,6 +213,10 @@ struct SpeakWriteConfig: Codable {
     var dictationMode: String { dictation?.mode ?? "formal" }
     var dictationCasual: Bool { dictationMode == "casual" }
     var dictationCapitalExceptions: [String] { dictation?.capitalExceptions ?? ["I"] }
+    var dictationAlwaysCommitted: Bool { dictation?.alwaysAppearCommitted ?? true }
+    // Should the live volatile guess render WHITE (no gray two-tone)? Only when the
+    // dictation engine is active AND its "always appear committed" toggle is on.
+    var volatileWhitens: Bool { engineKind == "dictation" && dictationAlwaysCommitted }
     var metricsEnabled: Bool { metrics?.enabled ?? true }
     var metricSilenceGrace: Double { metrics?.silenceGraceSeconds ?? 1.0 }
     var metricVoiceThreshold: Double { metrics?.voiceThreshold ?? 0.15 }
@@ -210,7 +226,7 @@ struct SpeakWriteConfig: Codable {
     static let fallback = SpeakWriteConfig(
         locale: "en-US",
         engine: "speech",
-        dictation: DictationConfig(punctuation: false, emoji: false, mode: "formal", capitalExceptions: ["I"]),
+        dictation: DictationConfig(punctuation: false, emoji: false, mode: "formal", capitalExceptions: ["I"], alwaysAppearCommitted: true),
         displayMode: "hud",
         hotkey: "ctrl+alt+s",
         hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160, commitOnly: false),

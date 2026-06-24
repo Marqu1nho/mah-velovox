@@ -14,6 +14,7 @@
       "announce_template" : "code block, {lines} lines",
       "mode" : "skip"
     },
+    "engine" : "avspeech",
     "headers" : {
       "pause_after_ms" : 400,
       "pause_before_ms" : 500,
@@ -45,6 +46,7 @@
     "replace" : {
 
     },
+    "sayVoice" : "Voice 2",
     "voice" : "com.apple.voice.premium.en-GB.Serena"
   },
   "speakWrite" : {
@@ -62,6 +64,7 @@
       "capitalExceptions" : [
         "I"
       ],
+      "alwaysAppearCommitted" : true,
       "emoji" : false,
       "mode" : "formal",
       "punctuation" : false

@@ -210,16 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
-
-        // Raw-JSON escape hatch for the knobs the GUI doesn't expose yet
-        // (replacements, mute lists, replace map, …). No ⌘, — that's Settings now.
-        let edit = NSMenuItem(title: "Edit Config (JSON)…", action: #selector(editConfig), keyEquivalent: "")
-        edit.target = self
-        menu.addItem(edit)
-
-        let reveal = NSMenuItem(title: "Reveal Config in Finder", action: #selector(revealConfig), keyEquivalent: "")
-        reveal.target = self
-        menu.addItem(reveal)
+        // "Edit Config (JSON)…" and "Reveal Config in Finder" now live INSIDE the
+        // Settings window (its footer), not the menu bar.
 
         menu.addItem(.separator())
 
@@ -257,17 +249,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsWC?.showWindow(nil)
         settingsWC?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func editConfig() {
-        let url = VeloVoxConfig.fileURL
-        // Make sure it exists (load() writes it on first run, but be safe).
-        if !FileManager.default.fileExists(atPath: url.path) { _ = VeloVoxConfig.load() }
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc private func revealConfig() {
-        NSWorkspace.shared.activateFileViewerSelecting([VeloVoxConfig.fileURL])
     }
 
     @objc private func showAbout() {

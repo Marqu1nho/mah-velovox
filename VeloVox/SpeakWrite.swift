@@ -7,8 +7,8 @@
 // v1 edit-as-you-go: the HUD is an editable NSTextView. Finalized speech appends
 // at the END of the document (before a dim volatile tail); you may freely edit
 // anything above. On stop, the WHOLE edited document is pasted — not the raw
-// transcript. The volatile tail is located by its dim attribute each update, so
-// it's robust to your edits in the bright region above it.
+// transcript. The volatile tail is located by a hidden .vvVolatile tag each update,
+// so it's robust to your edits above it (and to dictation painting it white).
 import Cocoa
 import SwiftUI
 import Combine
@@ -16,6 +16,11 @@ import Speech
 import AVFoundation
 import CoreAudio
 import Carbon.HIToolbox
+
+extension NSAttributedString.Key {
+    // Marks the trailing "live guess" run so we can locate it independent of color.
+    static let vvVolatile = NSAttributedString.Key("vvVolatile")
+}
 
 // ---------------------------------------------------------------------------
 // A borderless panel that CAN become key (so the text view accepts edits), but
@@ -207,9 +212,15 @@ final class HUD {
             .font: NSFont.systemFont(ofSize: fontSize),
             .foregroundColor: NSColor.white,
         ]
+        // The live "guess" tail. We TAG it with .vvVolatile so we can locate it
+        // exactly (see volatileRange) — color is now free to be anything. Color it
+        // white when the engine wants no two-tone (dictation w/ volatileText off),
+        // otherwise dim gray like speech mode has always shown.
         volAttrs = [
             .font: NSFont.systemFont(ofSize: fontSize),
-            .foregroundColor: NSColor(white: 1.0, alpha: 0.45),
+            .foregroundColor: VELOVOX.speakWrite.volatileWhitens
+                ? NSColor.white : NSColor(white: 1.0, alpha: 0.45),
+            .vvVolatile: true,
         ]
         // Assign before any [weak self] closure below so self is fully initialized.
         orbHost = NSHostingView(rootView: RawVoiceHost(model: orbModel, diameter: VELOVOX.speakWrite.orbSize))
@@ -443,9 +454,11 @@ final class HUD {
         VeloVoxConfig.save()
     }
 
-    // The dim volatile tail is always the trailing run with reduced alpha. We
-    // RECOMPUTE it each update by scanning back over dim-colored characters, so
-    // edits the user makes in the bright region above never desync our bookkeeping.
+    // The volatile tail is the trailing run TAGGED with .vvVolatile. We RECOMPUTE it
+    // each update by scanning back over tagged characters, so edits the user makes in
+    // the committed region above never desync our bookkeeping. (We mark it explicitly
+    // rather than infer it from text color — color is a display choice, e.g. dictation
+    // paints volatile white, and must not double as the volatile/committed signal.)
     private func volatileRange() -> NSRange {
         guard let ts = textView.textStorage else { return NSRange(location: 0, length: 0) }
         let len = ts.length
@@ -453,8 +466,8 @@ final class HUD {
         var loc = len
         while loc > 0 {
             var eff = NSRange()
-            let color = ts.attribute(.foregroundColor, at: loc - 1, effectiveRange: &eff) as? NSColor
-            if (color?.alphaComponent ?? 1.0) < 0.9 { loc = eff.location } else { break }
+            let isVol = ts.attribute(.vvVolatile, at: loc - 1, effectiveRange: &eff) as? Bool
+            if isVol == true { loc = eff.location } else { break }
         }
         return NSRange(location: loc, length: len - loc)
     }

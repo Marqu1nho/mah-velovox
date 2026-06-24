@@ -12,7 +12,7 @@ import Carbon.HIToolbox
 // state.
 // ---------------------------------------------------------------------------
 final class ReadAloudController {
-    private let speaker = Speaker()
+    private let speaker: Speaking = SpeakerFactory.make()
     private let pill = TransportPill()
 
     init() {

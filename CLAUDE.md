@@ -17,6 +17,11 @@ Whenever a new config-backed feature is added, do ALL of:
 3. **Add it to the on-disk config** so the user can actually see and edit it —
    both the committed `config.example.json` AND the user's real
    `~/.config/velovox/config.json`.
+4. **Expose it as a control in the Settings GUI** (`VeloVox/Settings.swift`) in the
+   SAME scope of work — a toggle/picker/slider/field bound to the knob. Config and
+   GUI move together; never ship one without the other.
 
-If a knob exists in the app but not in the user's config file, it is a bug.
-The config file is the contract; the code default is only the safety net.
+If a knob exists in the app but not in the user's config file, OR exists in config
+but has no Settings control, it is a bug. The config file is the contract, the
+Settings page is how the user discovers/edits it, and the code default is only the
+safety net.

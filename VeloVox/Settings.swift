@@ -95,6 +95,10 @@ struct SettingsView: View {
     private let pathOptions   = ["basename", "full", "skip"]
     private let emojiOptions  = ["skip", "name", "keep"]
     private let engineOptions = ["speech", "dictation"]
+    // Read Aloud TTS backend: AVSpeech (built-in voices) vs the `say` CLI (reaches
+    // the restricted Siri voices). Labels are friendlier than the raw config values.
+    private let ttsEngineOptions = [("avspeech", "AVSpeech (built-in voices)"),
+                                    ("say", "Siri voice (say)")]
     private let displayOptions = ["hud", "orb", "off"]
     private let dictModeOptions = ["formal", "casual"]
     private let orbPositions = ["top-left", "top-center", "top-right",
@@ -127,7 +131,16 @@ struct SettingsView: View {
     // MARK: Read Aloud
     // ----------------------------------------------------------------------
     private var readAloudSection: some View {
-        Section("Read Aloud") {
+        let isSay = VELOVOX.readAloud.ttsEngine == "say"
+        return Section("Read Aloud") {
+            Picker("Engine", selection: Binding(
+                get: { VELOVOX.readAloud.ttsEngine },
+                set: { VELOVOX.readAloud.engine = $0; bump() })) {
+                ForEach(ttsEngineOptions, id: \.0) { Text($0.1).tag($0.0) }
+            }
+            Text("Siri voice has higher start latency but better quality. Relaunch to apply an engine change.")
+                .font(.caption).foregroundStyle(.secondary)
+
             // Speech rate 0.3–0.7 (AVSpeech rate-factor used by the app).
             VStack(alignment: .leading) {
                 Text("Speech rate: \(String(format: "%.2f", VELOVOX.readAloud.rate ?? 0.5))")
@@ -146,7 +159,14 @@ struct SettingsView: View {
                 if !voices.contains(where: { $0.id == VELOVOX.readAloud.voiceSpec }) {
                     Text(VELOVOX.readAloud.voiceSpec).tag(VELOVOX.readAloud.voiceSpec)
                 }
-            }
+            }.disabled(isSay)
+
+            // Siri-voice (say) engine: the `say -v` voice name (default "Voice 2").
+            TextField("Siri voice name", text: strBinding(
+                { VELOVOX.readAloud.sayVoice },
+                { VELOVOX.readAloud.sayVoice = $0 },   // no bump: preserves TextField focus
+                fallback: VELOVOX.readAloud.sayVoiceName))
+                .disabled(!isSay)
 
             HStack {
                 TextField("Hotkey", text: strBinding(
@@ -249,6 +269,9 @@ struct SettingsView: View {
                 .disabled(!isDictation)
             Toggle("Spoken emoji", isOn: dictBindingBool(
                 { $0.emoji }, { $0.emoji = $1 }, fallback: false))
+                .disabled(!isDictation)
+            Toggle("Make Dictation always appear committed", isOn: dictBindingBool(
+                { $0.alwaysAppearCommitted }, { $0.alwaysAppearCommitted = $1 }, fallback: true))
                 .disabled(!isDictation)
 
             // --- HUD-mode-only knobs ---
@@ -394,16 +417,32 @@ struct SettingsView: View {
     // MARK: Footer (Save + caveat)
     // ----------------------------------------------------------------------
     private var footerSection: some View {
-        Section {
+        Section("Config file") {
             HStack {
                 Button("Save") { VeloVoxConfig.save() }
                     .keyboardShortcut(.defaultAction)
                 Spacer()
+                Button("Edit Config (JSON)…") { Self.editConfigJSON() }
+                Button("Reveal in Finder") { Self.revealConfigInFinder() }
             }
             Text("Settings are also saved automatically when this window closes. "
                  + "Saving rewrites config.json in canonical form — any hand-added "
-                 + "comments or custom formatting are not preserved.")
+                 + "comments or custom formatting are not preserved. The JSON escape "
+                 + "hatch reaches knobs the GUI doesn't expose yet (replacements, mute "
+                 + "lists, …).")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    // Open config.json in the default editor; ensure it exists first (load() writes
+    // it on first run). Moved here from the menu bar.
+    static func editConfigJSON() {
+        let url = VeloVoxConfig.fileURL
+        if !FileManager.default.fileExists(atPath: url.path) { _ = VeloVoxConfig.load() }
+        NSWorkspace.shared.open(url)
+    }
+
+    static func revealConfigInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([VeloVoxConfig.fileURL])
     }
 }

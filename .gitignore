@@ -5,5 +5,8 @@
 # Experiment worktrees
 .worktrees/
 
+# Xcode per-user state (window layout, scheme ordering) — machine-specific
+.swiftpm/
+
 # macOS
 .DS_Store

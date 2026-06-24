@@ -46,8 +46,17 @@ mkdir -p "${APP}/Contents/Resources"
 iconutil -c icns icons/VeloVox.iconset -o "${APP}/Contents/Resources/VeloVox.icns"
 cp icons/MenuBarIcon.pdf "${APP}/Contents/Resources/MenuBarIcon.pdf"
 
-# Ad-hoc sign with a stable bundle id so TCC has something to key on.
+# Sign with the stable self-signed "VeloVox Dev" identity (in the login keychain)
+# so TCC keys Mic/Accessibility grants on a fixed identity, not the per-build hash —
+# grants then survive rebuilds AND whoever launches the app. Falls back to ad-hoc if
+# the cert is missing (e.g. a fresh machine before the .p12 is re-imported).
 echo "signing..."
-codesign --force --sign - --identifier "${BUNDLE_ID}" "${APP}"
+SIGN_ID="VeloVox Dev"
+if security find-identity -p codesigning | grep -q "$SIGN_ID"; then
+    codesign --force --sign "$SIGN_ID" --identifier "${BUNDLE_ID}" "${APP}"
+else
+    echo "  (no '$SIGN_ID' identity found — ad-hoc signing; expect TCC re-prompts)"
+    codesign --force --sign - --identifier "${BUNDLE_ID}" "${APP}"
+fi
 
 echo "built $(pwd)/${APP}"
