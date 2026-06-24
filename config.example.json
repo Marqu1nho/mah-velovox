@@ -1,0 +1,105 @@
+{
+  "readAloud" : {
+    "alerts" : {
+      "y_pct" : 3.5
+    },
+    "clean" : {
+      "emoji" : "skip",
+      "paths" : "basename",
+      "rejoin" : "smart",
+      "split_identifiers" : true,
+      "urls" : "domain"
+    },
+    "code_blocks" : {
+      "announce_template" : "code block, {lines} lines",
+      "mode" : "skip"
+    },
+    "headers" : {
+      "pause_after_ms" : 400,
+      "pause_before_ms" : 500,
+      "rate_factor" : 0.85,
+      "treat_all_caps_lines_as_headers" : true
+    },
+    "hotkey" : "ctrl+alt+cmd+r",
+    "limits" : {
+      "max_selection_chars" : 60000
+    },
+    "mute" : {
+      "blocks" : [
+
+      ],
+      "by_app" : {
+
+      },
+      "global" : [
+
+      ]
+    },
+    "pauses" : {
+      "comma_ms" : 150,
+      "horizontal_rule_ms" : 600,
+      "list_item_ms" : 200,
+      "paragraph_ms" : 350
+    },
+    "rate" : 0.5,
+    "replace" : {
+
+    },
+    "voice" : "com.apple.voice.premium.en-GB.Serena"
+  },
+  "speakWrite" : {
+    "audio" : {
+      "warnBluetoothInput" : true
+    },
+    "cue" : {
+      "bloom" : true,
+      "sound" : true,
+      "start" : "Tink",
+      "stop" : "",
+      "volume" : 0.5
+    },
+    "dictation" : {
+      "capitalExceptions" : [
+        "I"
+      ],
+      "emoji" : false,
+      "mode" : "formal",
+      "punctuation" : false
+    },
+    "displayMode" : "hud",
+    "engine" : "speech",
+    "hotkey" : "ctrl+alt+s",
+    "hud" : {
+      "alpha" : 0.5,
+      "commitOnly" : false,
+      "fontSize" : 22,
+      "height" : 160,
+      "width" : 560
+    },
+    "locale" : "en-US",
+    "metrics" : {
+      "enabled" : true,
+      "flash" : true,
+      "silenceGraceSeconds" : 1,
+      "voiceThreshold" : 0.15
+    },
+    "orb" : {
+      "position" : "center",
+      "size" : 150
+    },
+    "replacements" : [
+      {
+        "insert" : "\n\n",
+        "say" : "new paragraph"
+      },
+      {
+        "insert" : "\n",
+        "say" : "new line"
+      },
+      {
+        "insert" : "🆒🫘",
+        "say" : "cool beans"
+      }
+    ]
+  }
+}

@@ -1,117 +1,73 @@
-# Native macOS apps:
-#   ReadAloud  (mac/ReadAloud/) — hotkey TTS reader. Targets: read / read-*
-#   SpeakWrite (mac/)           — hotkey dictation.   Targets: speak / speak-*
+# Velovox — one native macOS menu-bar app, two on-device voice tools:
+#   • Read Aloud (⌃⌥⌘R) — speak the selected text aloud  ("speak": you hear it)
+#   • Dictate    (⌃⌥S)  — live dictation at the cursor     ("write": you write it)
 #
-# Naming rule: the VERB says whether it recompiles.
-#   bare name (read / speak)  = launch the existing build, NO rebuild (daily driver)
-#   *-rebuild                 = recompile + launch (after you change code)
-#   *-debug                   = recompile + run in the foreground with live logs
-#   *-build                   = compile + bundle + sign only, don't launch
-#   *-stop                    = quit it
-#   *-reset                   = reset TCC permission grants + rebuild
+# It's ONE app/one binary now, so `make speak` and `make write` both launch the
+# same Velovox.app (both hotkeys are always live; toggle either from the menu bar).
+# Use whichever verb is in your head. One shared set of lifecycle commands.
+#
+# Config: ~/.config/velovox/config.json  (sections: readAloud, speakWrite)
+#
+#   speak / write   launch the existing build, NO rebuild (daily driver)
+#   rebuild         recompile + launch (after you change code)
+#   debug           recompile + run in the foreground with live logs
+#   build           compile + bundle + sign only, don't launch
+#   stop            quit it
+#   reset           reset Mic+Accessibility grants + rebuild
 #
 # All launches exec the inner binary DIRECTLY (never `open`): TCC keys the
-# Accessibility/Mic grant to the direct-exec identity of these ad-hoc-signed apps,
+# Mic/Accessibility grant to the direct-exec identity of this ad-hoc-signed app,
 # and an `open` (LaunchServices) launch presents a different identity the grant
-# misses — silently breaking paste/capture. *-reset re-signs (new ad-hoc identity),
-# which can invalidate grants, so it clears them for a clean re-grant.
+# misses — silently breaking paste/capture. `reset` re-signs (new ad-hoc
+# identity), which can invalidate grants, so it clears them for a clean re-grant.
 
-PY     := .venv/bin/python
-MACDIR := mac
-APPID  := com.marco.speakwrite
-APP    := $(MACDIR)/SpeakWrite.app
-RADIR  := mac/ReadAloud
-RAID   := com.marco.readaloud
-RAAPP  := $(RADIR)/ReadAloud.app
+APPID := com.marco.velovox
+APP   := Velovox.app
+BIN   := $(APP)/Contents/MacOS/Velovox
 
 .DEFAULT_GOAL := help
-.PHONY: help status stop-read tts \
-        read read-rebuild read-debug read-build read-stop read-reset \
-        speak speak-rebuild speak-debug speak-build speak-stop speak-reset speak-stats
+.PHONY: help speak write launch rebuild debug build stop reset stats
 
 help:
-	@echo "ReadAloud (TTS reader) — config at ~/.config/readaloud/config.json"
-	@echo "  make read           launch the current build, NO rebuild — daily driver"
-	@echo "  make read-rebuild   recompile + launch (use after changing code)"
-	@echo "  make read-debug     recompile + run in foreground with live logs"
-	@echo "  make read-build     compile + bundle + sign only (don't launch)"
-	@echo "  make read-stop      quit it"
-	@echo "  make read-reset     reset Accessibility grant + rebuild"
+	@echo "Velovox — config at ~/.config/velovox/config.json"
+	@echo "  make speak / make write   launch the current build, NO rebuild — daily driver"
+	@echo "                            (same app; 'speak'=hear it, 'write'=dictate it)"
+	@echo "  make rebuild              recompile + launch (use after changing code)"
+	@echo "  make debug                recompile + run in foreground with live logs"
+	@echo "  make build                compile + bundle + sign only (don't launch)"
+	@echo "  make stop                 quit it"
+	@echo "  make reset                reset Mic+Accessibility grants + rebuild"
+	@echo "  make stats                dictation WPM stats (7-day / last-50 / all-time)"
 	@echo ""
-	@echo "SpeakWrite (dictation)"
-	@echo "  make speak          launch the current build, NO rebuild — daily driver"
-	@echo "  make speak-rebuild  recompile + launch (use after changing code)"
-	@echo "  make speak-debug    recompile + run in foreground with live logs"
-	@echo "  make speak-build    compile + bundle + sign only (don't launch)"
-	@echo "  make speak-stop     quit it"
-	@echo "  make speak-reset    reset Mic+Accessibility grants + rebuild"
-	@echo "  make speak-stats    dictation WPM stats (7-day / last-50 / all-time)"
-	@echo ""
-	@echo "Misc"
-	@echo "  make tts            TTS probe: hear/list AVSpeechSynthesizer voices"
-	@echo "  make stop-read      stop the legacy Python readaloud daemon (being retired)"
-	@echo "  make status         show whether the legacy daemon is running"
+	@echo "Hotkeys: ⌃⌥⌘R reads the selection · ⌃⌥S dictates at the cursor."
 
-# --- ReadAloud ---
-read-build:
-	@$(RADIR)/build.sh
+build:
+	@./build.sh
 
-read-stop:
-	@pkill -x ReadAloud 2>/dev/null || true
+stop:
+	@pkill -x Velovox 2>/dev/null || true
 
-read: read-stop
-	@nohup $(RAAPP)/Contents/MacOS/ReadAloud >/dev/null 2>&1 &
-	@echo "ReadAloud launched from the existing build (no rebuild). Select text + hotkey to read."
+# speak and write are synonyms — both launch the one unified app.
+speak: launch
+write: launch
+launch: stop
+	@nohup $(BIN) >/dev/null 2>&1 &
+	@echo "Velovox launched (no rebuild). ⌃⌥⌘R reads the selection · ⌃⌥S dictates at the cursor."
 
-read-rebuild: read-stop read-build
-	@nohup $(RAAPP)/Contents/MacOS/ReadAloud >/dev/null 2>&1 &
-	@echo "ReadAloud rebuilt + launched. Select text + hotkey to read."
+rebuild: stop build
+	@nohup $(BIN) >/dev/null 2>&1 &
+	@echo "Velovox rebuilt + launched. ⌃⌥⌘R reads · ⌃⌥S dictates."
 
-read-debug: read-stop read-build
-	@echo "running ReadAloud in foreground — ctrl+C to stop. logs below:"
-	@$(RAAPP)/Contents/MacOS/ReadAloud
+debug: stop build
+	@echo "running Velovox in foreground — ctrl+C to stop. logs below:"
+	@$(BIN)
 
-read-reset: read-stop
-	@tccutil reset Accessibility $(RAID) 2>/dev/null || true
-	@$(RADIR)/build.sh
-	@echo "Accessibility grant reset + rebuilt. Run 'make read' and re-grant Accessibility."
-
-# --- SpeakWrite ---
-speak-build:
-	@$(MACDIR)/build.sh
-
-speak-stop:
-	@pkill -x SpeakWrite 2>/dev/null || true
-
-speak: speak-stop
-	@nohup $(APP)/Contents/MacOS/SpeakWrite >/dev/null 2>&1 &
-	@echo "SpeakWrite launched from the existing build (no rebuild). ctrl+alt+S to dictate."
-
-speak-rebuild: speak-stop speak-build
-	@nohup $(APP)/Contents/MacOS/SpeakWrite >/dev/null 2>&1 &
-	@echo "SpeakWrite rebuilt + launched. ctrl+alt+S to dictate."
-
-speak-debug: speak-stop speak-build
-	@echo "running SpeakWrite in foreground — ctrl+C to stop. logs below:"
-	@$(APP)/Contents/MacOS/SpeakWrite
-
-speak-reset: speak-stop
+reset: stop
 	@tccutil reset Microphone $(APPID) 2>/dev/null || true
 	@tccutil reset Accessibility $(APPID) 2>/dev/null || true
-	@$(MACDIR)/build.sh
+	@./build.sh
 	@echo "TCC grants reset + rebuilt. Run 'make speak' and re-grant Mic + Accessibility."
 
-speak-stats:
-	@$(PY) sw_stats.py
-
-# --- misc ---
-tts:
-	@xcrun -sdk macosx swiftc $(MACDIR)/tts_probe.swift -o $(MACDIR)/tts_probe
-	@./$(MACDIR)/tts_probe
-
-stop-read:
-	@pkill -f readaloud.daemon 2>/dev/null || true
-	@echo "legacy readaloud daemon stopped"
-
-status:
-	@pgrep -fl readaloud.daemon || echo "legacy readaloud daemon: not running"
+stats:
+	@test -x $(BIN) || ./build.sh
+	@$(BIN) --stats

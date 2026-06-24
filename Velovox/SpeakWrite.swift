@@ -18,181 +18,6 @@ import CoreAudio
 import Carbon.HIToolbox
 
 // ---------------------------------------------------------------------------
-// Config — JSON at ~/.config/speakwrite/config.json, decoded via Codable (zero
-// dependencies). Written with defaults on first run so there's always a file to
-// edit; a malformed file logs and falls back to defaults rather than crashing.
-//
-// `replacements` is an ARRAY (not an object) on purpose: order matters — the
-// dictionary is applied most-specific-first — and JSON objects don't preserve
-// key order when decoded. `\n` is a native JSON escape, so newlines just work.
-// ---------------------------------------------------------------------------
-struct Replacement: Codable { let say: String; let insert: String }
-// TEXT-mode geometry. x/y optional: absent → bottom-center; written when you drag/resize.
-struct HUDConfig: Codable {
-    var alpha: Double; var fontSize: Double; var width: Double; var height: Double
-    var x: Double? = nil; var y: Double? = nil
-    // commitOnly: when true the HUD NEVER shows the dim volatile/interim text —
-    // only finalized (committed) words appear, one color. An experiment to see if
-    // killing the gray-text jitter recovers the "fast" feeling of orb mode.
-    var commitOnly: Bool? = nil
-}
-// MINIMAL-mode (orb) config — kept SEPARATE from HUDConfig so the two modes never
-// borrow each other's geometry (the bug where a tiny orb window carried into text).
-// Per the RawVoice handoff the orb is a fixed, centered ambient indicator.
-struct OrbConfig: Codable {
-    var size: Double
-    var position: String? = nil   // 9-grid anchor: top-left … center … bottom-right
-}
-// Start/stop CUES — the confirmation the user is used to from paid dictation apps.
-// `sound` is the master switch; `start`/`stop` are macOS system-sound NAMES
-// (Tink, Pop, Glass, Purr, Ping, Bottle, Hero, Morse, Submarine, …) — empty/absent
-// = silent. `bloom` makes the orb breathe once on start so blob mode (which has no
-// "listening…" text) gets a subtle VISUAL "go ahead" too.
-struct CueConfig: Codable {
-    var sound: Bool? = nil
-    var start: String? = nil
-    var stop: String? = nil
-    var volume: Double? = nil   // 0…1
-    var bloom: Bool? = nil
-}
-
-// Smart WPM metrics. We measure SPEAKING time, not recording time: silence
-// beyond `silenceGraceSeconds` is treated as thinking and excluded, so the WPM
-// reflects how fast you actually talk. `voiceThreshold` is on the 0…1 mic level.
-struct MetricsConfig: Codable {
-    var enabled: Bool? = nil
-    var silenceGraceSeconds: Double? = nil
-    var voiceThreshold: Double? = nil
-    var flash: Bool? = nil           // brief "142 wpm" toast after each session
-}
-
-// Audio-route nudges. `warnBluetoothInput`: when the mic is a Bluetooth device
-// (forced into mono ~16 kHz "call mode" / HFP — it CAN'T do hi-fi output and mic
-// at once), flash a one-time nudge to switch to a wired/built-in mic for clearer
-// transcription. Detects the CONDITION (BT transport), not any specific device,
-// so it helps anyone in the same situation.
-struct AudioConfig: Codable {
-    var warnBluetoothInput: Bool? = nil
-}
-
-// Tuning for the "dictation" engine (DictationTranscriber). Both flags are
-// opt-in on Apple's side: leave punctuation false and the engine never
-// auto-inserts periods/commas (so a thinking pause won't end your sentence) and
-// stays mostly lowercase — you speak punctuation yourself / via replacements.
-struct DictationConfig: Codable {
-    var punctuation: Bool? = nil
-    var emoji: Bool? = nil
-    // Write mode: "formal" (default, engine casing untouched) or "casual".
-    // Casual lowercases the first word of each sentence — except words on the
-    // capitalExceptions list (matched whole-word, case-insensitive; an entry
-    // also covers its contractions, so "I" keeps I'm / I'll / I've / I'd).
-    var mode: String? = nil
-    var capitalExceptions: [String]? = nil
-}
-
-struct Config: Codable {
-    var locale: String
-    var engine: String? = nil        // "speech" (default, auto-punctuated) or "dictation"
-    var dictation: DictationConfig? = nil
-    var displayMode: String? = nil   // "hud" (default), "orb", or "off"
-    var hotkey: String? = nil        // e.g. "ctrl+alt+s"; default if absent
-    var hud: HUDConfig
-    var orb: OrbConfig? = nil
-    var cue: CueConfig? = nil
-    var metrics: MetricsConfig? = nil
-    var audio: AudioConfig? = nil
-    var replacements: [Replacement]
-
-    // Canonical mode. Accepts the new names (hud/orb) and the old ones
-    // (text/minimal) for back-compat. Missing/null/unknown → "hud" so an upgrade
-    // never leaves the app invisible.
-    var mode: String {
-        switch displayMode {
-        case "orb", "minimal": return "orb"
-        case "off":            return "off"
-        default:               return "hud"
-        }
-    }
-    var orbMode: Bool { mode == "orb" }
-    var orbSize: CGFloat { CGFloat(orb?.size ?? 150) }
-    var orbPosition: String { orb?.position ?? "center" }
-    var hotkeySpec: String { hotkey ?? "ctrl+alt+s" }
-    var cueSound: Bool { cue?.sound ?? true }
-    var cueStart: String { cue?.start ?? "Tink" }   // subtle "you can talk now"
-    var cueStop: String? { cue?.stop }              // nil/empty → silent on paste
-    var cueVolume: Float { Float(cue?.volume ?? 0.5) }
-    var cueBloom: Bool { cue?.bloom ?? true }
-    var hudCommitOnly: Bool { hud.commitOnly ?? false }
-    // "speech" → SpeechTranscriber (auto-punctuation); "dictation" → DictationTranscriber.
-    var engineKind: String { engine == "dictation" ? "dictation" : "speech" }
-    var dictationPunctuation: Bool { dictation?.punctuation ?? false }
-    var dictationEmoji: Bool { dictation?.emoji ?? false }
-    var dictationMode: String { dictation?.mode ?? "formal" }
-    var dictationCasual: Bool { dictationMode == "casual" }
-    var dictationCapitalExceptions: [String] { dictation?.capitalExceptions ?? ["I"] }
-    var metricsEnabled: Bool { metrics?.enabled ?? true }
-    var metricSilenceGrace: Double { metrics?.silenceGraceSeconds ?? 1.0 }
-    var metricVoiceThreshold: Double { metrics?.voiceThreshold ?? 0.15 }
-    var metricsFlash: Bool { metrics?.flash ?? true }
-    var warnBluetoothInput: Bool { audio?.warnBluetoothInput ?? true }
-
-    static let fallback = Config(
-        locale: "en-US",
-        engine: "speech",
-        dictation: DictationConfig(punctuation: false, emoji: false, mode: "formal", capitalExceptions: ["I"]),
-        displayMode: "hud",
-        hotkey: "ctrl+alt+s",
-        hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160, commitOnly: false),
-        orb: OrbConfig(size: 150, position: "center"),
-        cue: CueConfig(sound: true, start: "Tink", stop: "", volume: 0.5, bloom: true),
-        metrics: MetricsConfig(enabled: true, silenceGraceSeconds: 1.0, voiceThreshold: 0.15, flash: true),
-        audio: AudioConfig(warnBluetoothInput: true),
-        replacements: [
-            Replacement(say: "new paragraph", insert: "\n\n"),
-            Replacement(say: "new line", insert: "\n"),
-            Replacement(say: "cool beans", insert: "🆒🫘"),
-        ])
-
-    private static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/speakwrite/config.json")
-    }
-
-    static func load() -> Config {
-        let fm = FileManager.default
-        let url = fileURL
-
-        if !fm.fileExists(atPath: url.path) {
-            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if let data = try? encoder().encode(fallback) { try? data.write(to: url) }
-            NSLog("speakwrite: wrote default config -> \(url.path)")
-            return fallback
-        }
-        do {
-            let cfg = try JSONDecoder().decode(Config.self, from: Data(contentsOf: url))
-            NSLog("speakwrite: loaded config <- \(url.path) (\(cfg.replacements.count) replacements)")
-            return cfg
-        } catch {
-            NSLog("speakwrite: BAD config (\(error)); using defaults. Fix \(url.path)")
-            return fallback
-        }
-    }
-
-    // Persist the live config (called when the HUD is moved/resized). Preserves
-    // the user's hand-edited replacements/locale — we mutate CONFIG in place.
-    static func save() {
-        do { try encoder().encode(CONFIG).write(to: fileURL) }
-        catch { NSLog("speakwrite: config save failed \(error)") }
-    }
-
-    private static func encoder() -> JSONEncoder {
-        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]; return e
-    }
-}
-
-var CONFIG = Config.load()
-
-// ---------------------------------------------------------------------------
 // A borderless panel that CAN become key (so the text view accepts edits), but
 // only when something inside actually needs it (becomesKeyOnlyIfNeeded) — so it
 // stays hands-off and the synthesized ⌘V lands in the target app, v0-style.
@@ -372,7 +197,7 @@ final class HUD {
     private var bloomLevel: CGFloat = 0  // one-shot start "breath", max'd with mic level
     private var bloomTimer: Timer?
     private let cueLabel = PassthroughLabel(labelWithString: "✓ Copied")
-    private let fontSize = CGFloat(CONFIG.hud.fontSize)
+    private let fontSize = CGFloat(VELOVOX.speakWrite.hud.fontSize)
     private var editing = false   // false until you click/arrow in; caret hidden
     private let commAttrs: [NSAttributedString.Key: Any]
     private let volAttrs: [NSAttributedString.Key: Any]
@@ -387,9 +212,9 @@ final class HUD {
             .foregroundColor: NSColor(white: 1.0, alpha: 0.45),
         ]
         // Assign before any [weak self] closure below so self is fully initialized.
-        orbHost = NSHostingView(rootView: RawVoiceHost(model: orbModel, diameter: CONFIG.orbSize))
+        orbHost = NSHostingView(rootView: RawVoiceHost(model: orbModel, diameter: VELOVOX.speakWrite.orbSize))
 
-        let w = CGFloat(CONFIG.hud.width), h = CGFloat(CONFIG.hud.height)
+        let w = CGFloat(VELOVOX.speakWrite.hud.width), h = CGFloat(VELOVOX.speakWrite.hud.height)
         panel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: w, height: h),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -412,7 +237,7 @@ final class HUD {
         bg = NSView(frame: panel.contentView!.bounds)
         bg.autoresizingMask = [.width, .height]
         bg.wantsLayer = true
-        bg.layer?.backgroundColor = NSColor.black.withAlphaComponent(CGFloat(CONFIG.hud.alpha)).cgColor
+        bg.layer?.backgroundColor = NSColor.black.withAlphaComponent(CGFloat(VELOVOX.speakWrite.hud.alpha)).cgColor
         bg.layer?.cornerRadius = 16
         bg.layer?.masksToBounds = true
 
@@ -494,7 +319,7 @@ final class HUD {
     // Toggle subviews for the active mode (text shows editor; minimal shows the
     // orb on a transparent background so it floats).
     private func applyMode() {
-        let orb = CONFIG.orbMode
+        let orb = VELOVOX.speakWrite.orbMode
         orbHost.isHidden = !orb
         scroll.isHidden = orb
         overlay.isHidden = orb
@@ -515,7 +340,7 @@ final class HUD {
     // ahead" even before you speak. Maxed with the live mic level so an immediate
     // start still reads. Orb-mode only; no-op otherwise.
     func bloom() {
-        guard CONFIG.orbMode, CONFIG.cueBloom else { return }
+        guard VELOVOX.speakWrite.orbMode, VELOVOX.speakWrite.cueBloom else { return }
         bloomTimer?.invalidate()
         let t0 = Date(); let dur = 0.9
         bloomTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] tm in
@@ -553,7 +378,7 @@ final class HUD {
 
     // Restore the saved spot if it's still on a screen; otherwise bottom-center.
     private func positionFromConfig() {
-        if let x = CONFIG.hud.x, let y = CONFIG.hud.y {
+        if let x = VELOVOX.speakWrite.hud.x, let y = VELOVOX.speakWrite.hud.y {
             let origin = NSPoint(x: x, y: y)
             let frame = NSRect(origin: origin, size: panel.frame.size)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) {
@@ -584,7 +409,7 @@ final class HUD {
     private func positionOrb() {
         guard let screen = NSScreen.main else { return }
         let vf = screen.visibleFrame, sz = panel.frame.size, m: CGFloat = 24
-        let a = CONFIG.orbPosition.lowercased()
+        let a = VELOVOX.speakWrite.orbPosition.lowercased()
         let x: CGFloat = a.contains("left")  ? vf.minX + m
                        : a.contains("right") ? vf.maxX - sz.width - m
                        :                        vf.midX - sz.width / 2
@@ -613,9 +438,9 @@ final class HUD {
     // Write the live position + size back to config (preserving everything else).
     private func persistGeometry() {
         let f = panel.frame
-        CONFIG.hud.x = Double(f.origin.x); CONFIG.hud.y = Double(f.origin.y)
-        CONFIG.hud.width = Double(f.width); CONFIG.hud.height = Double(f.height)
-        Config.save()
+        VELOVOX.speakWrite.hud.x = Double(f.origin.x); VELOVOX.speakWrite.hud.y = Double(f.origin.y)
+        VELOVOX.speakWrite.hud.width = Double(f.width); VELOVOX.speakWrite.hud.height = Double(f.height)
+        VelovoxConfig.save()
     }
 
     // The dim volatile tail is always the trailing run with reduced alpha. We
@@ -648,7 +473,7 @@ final class HUD {
         textView.string = ""
         // commit-only: no dim prompt either — the box starts empty and fills with
         // committed words only (the start cue already signals "listening").
-        setVolatile(CONFIG.hudCommitOnly ? "" : "listening…")
+        setVolatile(VELOVOX.speakWrite.hudCommitOnly ? "" : "listening…")
     }
 
     // Reveal the caret + mark that the user has taken edit control.
@@ -693,7 +518,7 @@ final class HUD {
             let prevIsWS = prev.rangeOfCharacter(from: .whitespacesAndNewlines) != nil
             if !prevIsWS && !s.hasPrefix("\n") { piece = " " + s }
         }
-        if CONFIG.dictationCasual {
+        if VELOVOX.speakWrite.dictationCasual {
             piece = WriteMode.casual(piece, sentenceStart: sentenceStartBefore(insertAt, in: nsStr))
         }
         let sel = textView.selectedRange()
@@ -720,7 +545,7 @@ final class HUD {
         let wasAtBottom = atBottom()
         let sel = textView.selectedRange()
         var s = s
-        if CONFIG.dictationCasual, !s.isEmpty {
+        if VELOVOX.speakWrite.dictationCasual, !s.isEmpty {
             s = WriteMode.casual(s, sentenceStart: sentenceStartBefore(range.location, in: ts.string as NSString))
         }
         ts.replaceCharacters(in: range, with: NSAttributedString(string: s, attributes: volAttrs))
@@ -744,12 +569,12 @@ final class HUD {
     }
 
     func show() {
-        switch CONFIG.mode {
+        switch VELOVOX.speakWrite.mode {
         case "off":
             return                                     // show nothing; dictate → paste only
         case "orb":
             applyMode()
-            let s = CONFIG.orbSize                      // fixed ambient indicator (own config)
+            let s = VELOVOX.speakWrite.orbSize                      // fixed ambient indicator (own config)
             orbLevel = 0; orbModel.level = 0
             orbHost.rootView = RawVoiceHost(model: orbModel, diameter: s)
             panel.setContentSize(NSSize(width: s, height: s))
@@ -759,7 +584,7 @@ final class HUD {
         default:                                       // "hud"
             applyMode()
             panel.isMovableByWindowBackground = false
-            panel.setContentSize(NSSize(width: CGFloat(CONFIG.hud.width), height: CGFloat(CONFIG.hud.height)))
+            panel.setContentSize(NSSize(width: CGFloat(VELOVOX.speakWrite.hud.width), height: CGFloat(VELOVOX.speakWrite.hud.height)))
             positionFromConfig()
             panel.makeKeyAndOrderFront(nil)            // become the key window (for arrows/typing)
             panel.makeFirstResponder(textView)         // textView gets keys; caret stays hidden
@@ -784,7 +609,7 @@ final class HUD {
 // substituted, so a rule normalizes many spoken variants to one fixed string.
 // ---------------------------------------------------------------------------
 enum Replacements {
-    private static let compiled: [(NSRegularExpression, String)] = CONFIG.replacements.compactMap { rule in
+    private static let compiled: [(NSRegularExpression, String)] = VELOVOX.speakWrite.replacements.compactMap { rule in
         let pattern: String
         if rule.say.hasPrefix("re:") {
             // Raw regex: everything after the "re:" prefix, used verbatim.
@@ -826,7 +651,7 @@ enum Replacements {
 // ---------------------------------------------------------------------------
 enum WriteMode {
     private static let exceptions: Set<String> =
-        Set(CONFIG.dictationCapitalExceptions.map { $0.lowercased() })
+        Set(VELOVOX.speakWrite.dictationCapitalExceptions.map { $0.lowercased() })
 
     private static func isException(_ word: [Character]) -> Bool {
         let stem = word.prefix { $0 != "'" && $0 != "\u{2019}" }   // up to first apostrophe
@@ -882,17 +707,17 @@ enum WriteMode {
 enum Cue {
     private static var cache: [String: NSSound] = [:]
     private static func play(_ name: String?) {
-        guard CONFIG.cueSound, let name, !name.isEmpty else { return }
+        guard VELOVOX.speakWrite.cueSound, let name, !name.isEmpty else { return }
         guard let s = cache[name] ?? NSSound(named: NSSound.Name(name)) else {
             NSLog("speakwrite: no system sound named '\(name)' (see /System/Library/Sounds)"); return
         }
         cache[name] = s
-        s.volume = CONFIG.cueVolume
+        s.volume = VELOVOX.speakWrite.cueVolume
         if s.isPlaying { s.stop() }
         s.play()
     }
-    static func start() { play(CONFIG.cueStart) }
-    static func stop()  { play(CONFIG.cueStop) }
+    static func start() { play(VELOVOX.speakWrite.cueStart) }
+    static func stop()  { play(VELOVOX.speakWrite.cueStop) }
 }
 
 // ---------------------------------------------------------------------------
@@ -956,17 +781,17 @@ final class WPMMeter {
         let dt = now.timeIntervalSince(prev)
         guard dt > 0, dt < 1 else { return }   // ignore stalls / huge gaps
         total += dt
-        if Double(level) >= CONFIG.metricVoiceThreshold {
+        if Double(level) >= VELOVOX.speakWrite.metricVoiceThreshold {
             speaking += dt; silenceRun = 0
         } else {
             silenceRun += dt
-            if silenceRun <= CONFIG.metricSilenceGrace { speaking += dt }  // bridge short pauses
+            if silenceRun <= VELOVOX.speakWrite.metricSilenceGrace { speaking += dt }  // bridge short pauses
         }
     }
 
     // Build a metric for `words` spoken; nil if disabled or too little to be real.
     func finish(words: Int) -> Metric? {
-        guard CONFIG.metricsEnabled, words > 0, speaking >= 0.5 else { return nil }
+        guard VELOVOX.speakWrite.metricsEnabled, words > 0, speaking >= 0.5 else { return nil }
         let wpm = Double(words) / (speaking / 60.0)
         let iso = ISO8601DateFormatter().string(from: Date())
         return Metric(date: iso, words: words,
@@ -978,9 +803,25 @@ final class WPMMeter {
 
 // Append-only per-session metrics log (JSONL), next to config.json.
 enum Metrics {
-    private static var fileURL: URL {
+    static var fileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/velovox/metrics.jsonl")
+    }
+    // Pre-Velovox the log lived next to the old speakwrite config. Carry the user's
+    // dictation history forward once, on first launch, so no stats are lost.
+    private static var legacyURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/speakwrite/metrics.jsonl")
+    }
+    static func migrateIfNeeded() {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: fileURL.path),
+              fm.fileExists(atPath: legacyURL.path) else { return }
+        try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do {
+            try fm.copyItem(at: legacyURL, to: fileURL)
+            NSLog("velovox: migrated dictation metrics \(legacyURL.path) -> \(fileURL.path)")
+        } catch { NSLog("velovox: metrics migration failed \(error)") }
     }
     static func append(_ m: Metric) {
         guard let line = try? JSONEncoder().encode(m) else { return }
@@ -1110,12 +951,12 @@ final class Dictation {
         // start its loop differ — everything below (assets, analyzer, audio
         // tap) treats it as `any SpeechModule`.
         let module: any SpeechModule
-        switch CONFIG.engineKind {
+        switch VELOVOX.speakWrite.engineKind {
         case "dictation":
             var opts: Set<DictationTranscriber.TranscriptionOption> = []
-            if CONFIG.dictationPunctuation { opts.insert(.punctuation) }
-            if CONFIG.dictationEmoji { opts.insert(.emoji) }
-            let t = DictationTranscriber(locale: Locale(identifier: CONFIG.locale),
+            if VELOVOX.speakWrite.dictationPunctuation { opts.insert(.punctuation) }
+            if VELOVOX.speakWrite.dictationEmoji { opts.insert(.emoji) }
+            let t = DictationTranscriber(locale: Locale(identifier: VELOVOX.speakWrite.locale),
                                          contentHints: [],
                                          transcriptionOptions: opts,
                                          reportingOptions: [.volatileResults],
@@ -1132,9 +973,9 @@ final class Dictation {
                     }
                 } catch { NSLog("speakwrite: results error \(error)") }
             }
-            NSLog("speakwrite: engine=dictation punctuation=\(CONFIG.dictationPunctuation) emoji=\(CONFIG.dictationEmoji)")
+            NSLog("speakwrite: engine=dictation punctuation=\(VELOVOX.speakWrite.dictationPunctuation) emoji=\(VELOVOX.speakWrite.dictationEmoji)")
         default:
-            let t = SpeechTranscriber(locale: Locale(identifier: CONFIG.locale),
+            let t = SpeechTranscriber(locale: Locale(identifier: VELOVOX.speakWrite.locale),
                                       preset: .progressiveTranscription)
             module = t
             resultsTask = Task { [weak self] in
@@ -1243,14 +1084,13 @@ enum Paster {
 // ---------------------------------------------------------------------------
 // App controller — global hotkey, orchestration.
 // ---------------------------------------------------------------------------
-final class Controller {
+final class SpeakWriteController {
     private let hud = HUD()
     private let dictation = Dictation()
     private let meter = WPMMeter()
     private let toast = Toast()
     private var dictating = false
     private var warnedBluetooth = false   // nudge once per contiguous BT-input state
-    private var hotKeyRef: EventHotKeyRef?
     private var previousApp: NSRunningApplication?
 
     init() {
@@ -1259,7 +1099,7 @@ final class Controller {
             if isFinal {
                 self.hud.appendFinal(text)
                 self.hud.setVolatile("")
-            } else if !CONFIG.hudCommitOnly {
+            } else if !VELOVOX.speakWrite.hudCommitOnly {
                 self.hud.setVolatile(text)   // skip the live gray guess in commit-only
             }
         }
@@ -1283,7 +1123,7 @@ final class Controller {
                 let words = edited.split(whereSeparator: { $0.isWhitespace }).count
                 if let m = self.meter.finish(words: words) {
                     Metrics.append(m)
-                    if CONFIG.metricsFlash { self.toast.flashWPM("\(Int(m.wpm)) wpm") }
+                    if VELOVOX.speakWrite.metricsFlash { self.toast.flashWPM("\(Int(m.wpm)) wpm") }
                 }
                 // If the user clicked in to edit, the HUD took key focus. Hide it
                 // and restore the original app before pasting so ⌘V lands there.
@@ -1313,7 +1153,7 @@ final class Controller {
     // warn once per contiguous BT state: switch away and back to re-arm, so it
     // never nags on every dictation while you're stuck on the bad mic.
     private func warnIfBluetoothMic() {
-        guard CONFIG.warnBluetoothInput else { return }
+        guard VELOVOX.speakWrite.warnBluetoothInput else { return }
         if AudioRoute.inputIsBluetooth() {
             if !warnedBluetooth {
                 warnedBluetooth = true
@@ -1325,76 +1165,16 @@ final class Controller {
         }
     }
 
+    // Register the dictation hotkey through the shared manager (which routes by
+    // EventHotKeyID so it coexists with ReadAloud's hotkey in one process).
     func registerHotKey() {
-        var ref: EventHotKeyRef?
-        let id = EventHotKeyID(signature: OSType(0x53574B59), id: 1)  // 'SWKY'
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                 eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            DispatchQueue.main.async { gController?.toggle() }
-            return noErr
-        }, 1, &spec, nil, nil)
-        // Parse the configured hotkey; fall back to ctrl+alt+S on anything invalid.
-        let parsed = Self.parseHotKey(CONFIG.hotkeySpec)
-        let (key, mods) = parsed ?? (UInt32(kVK_ANSI_S), UInt32(controlKey | optionKey))
-        let note = parsed == nil ? " — UNPARSEABLE, using default ctrl+alt+s" : ""
-        let status = RegisterEventHotKey(key, mods, id, GetApplicationEventTarget(), 0, &ref)
-        hotKeyRef = ref
-        NSLog("speakwrite: hotkey '\(CONFIG.hotkeySpec)'\(note) status=\(status) (0=ok; nonzero=already taken)")
-    }
-
-    // Parse e.g. "ctrl+alt+s" / "cmd+shift+space" into (keycode, Carbon modifiers).
-    // Returns nil if no recognizable key token is present.
-    static func parseHotKey(_ spec: String) -> (UInt32, UInt32)? {
-        var mods: UInt32 = 0
-        var keyCode: UInt32? = nil
-        for raw in spec.lowercased().split(separator: "+") {
-            let t = raw.trimmingCharacters(in: .whitespaces)
-            switch t {
-            case "cmd", "command", "⌘":          mods |= UInt32(cmdKey)
-            case "ctrl", "control", "⌃":         mods |= UInt32(controlKey)
-            case "alt", "opt", "option", "⌥":    mods |= UInt32(optionKey)
-            case "shift", "⇧":                   mods |= UInt32(shiftKey)
-            default:                             keyCode = keyCodeMap[t]
-            }
+        HotKeys.register(id: HotKeyID.speakWrite,
+                         spec: VELOVOX.speakWrite.hotkeySpec,
+                         defaultKey: UInt32(kVK_ANSI_S),
+                         defaultMods: UInt32(controlKey | optionKey)) {
+            gSpeakWrite?.toggle()
         }
-        guard let k = keyCode else { return nil }
-        return (k, mods)
-    }
-
-    private static let keyCodeMap: [String: UInt32] = [
-        "a":0,"s":1,"d":2,"f":3,"h":4,"g":5,"z":6,"x":7,"c":8,"v":9,"b":11,"q":12,
-        "w":13,"e":14,"r":15,"y":16,"t":17,"o":31,"u":32,"i":34,"p":35,"l":37,
-        "j":38,"k":40,"n":45,"m":46,
-        "1":18,"2":19,"3":20,"4":21,"5":23,"6":22,"7":26,"8":28,"9":25,"0":29,
-        "space":49,"return":36,"enter":36,"tab":48,"escape":53,"esc":53,
-        // punctuation / symbols
-        "`":50,"grave":50,"backtick":50,"-":27,"minus":27,"=":24,"equal":24,
-        "[":33,"]":30,";":41,"'":39,",":43,".":47,"period":47,"/":44,"slash":44,"\\":42,
-    ]
-}
-
-var gController: Controller?
-
-// ---------------------------------------------------------------------------
-// Entry.
-// ---------------------------------------------------------------------------
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ note: Notification) {
-        let c = Controller()
-        gController = c
-        c.registerHotKey()
-        // Nudge the Accessibility prompt if we don't have it (needed for paste).
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(opts) {
-            NSLog("speakwrite: grant Accessibility (needed to paste) in System Settings → Privacy")
-        }
-        NSLog("speakwrite: STREAMING build ready — ctrl+alt+S to dictate (live), again to paste")
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)   // no dock icon
-app.run()
+var gSpeakWrite: SpeakWriteController?

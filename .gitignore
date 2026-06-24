@@ -1,29 +1,8 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-
-# Test caches
-.pytest_cache/
+# Build artifacts
+/Velovox.app/
 
 # Experiment worktrees
 .worktrees/
 
-# Native app build artifacts
-mac/SpeakWrite.app/
-mac/SpeakWrite
-mac/tts_probe
-mac/ReadAloud/ReadAloud.app/
-mac/ReadAloud/ReadAloud
-
-# Throwaway probes / recordings (kept locally, not committed)
-/apple_probe
-/apple_live
-/sw_diag.py
-/sw_diag.wav
+# macOS
+.DS_Store
