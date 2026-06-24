@@ -24,8 +24,8 @@ run it once past Gatekeeper.
 ```sh
 git clone git@github.com:Marqu1nho/mah-velovox.git
 cd mah-velovox
-make build        # compiles Velovox.app with Xcode's Swift toolchain
-make speak        # launches it (menu-bar icon appears)
+make build         # compiles Velovox.app with Xcode's Swift toolchain
+make launch        # launches it (menu-bar icon appears)
 ```
 
 ### First launch (Gatekeeper)
@@ -54,13 +54,9 @@ grant both in **System Settings → Privacy & Security**:
 
 ## Commands
 
-It's one app, so `make speak` and `make write` both launch the same thing — use
-whichever word is in your head.
-
 | Command        | What it does                                             |
 | -------------- | -------------------------------------------------------- |
-| `make speak`   | Launch the current build, no rebuild *(daily driver)*    |
-| `make write`   | Same — launch *(alias, for when you're "writing")*       |
+| `make launch`  | Launch the current build, no rebuild *(daily driver)*    |
 | `make rebuild` | Recompile + relaunch (after changing code)               |
 | `make debug`   | Recompile + run in the foreground with live logs         |
 | `make build`   | Compile + bundle + sign only (don't launch)              |
@@ -76,7 +72,7 @@ One file: **`~/.config/velovox/config.json`**, written with full defaults on fir
 run. It has two sections — `readAloud` and `speakWrite`. A committed
 [`config.example.json`](config.example.json) mirrors every knob.
 
-> Config is read **at launch**, so changes need a relaunch (`make speak`).
+> Config is read **at launch**, so changes need a relaunch (`make launch`).
 > The menu-bar **Edit Config…** item opens the file for you.
 
 ### Dictation (`speakWrite`)

@@ -105,11 +105,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenuBar() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Velovox")
-            button.image?.isTemplate = true
+            button.image = Self.menuBarIcon()
         }
         item.menu = makeMenu()
         statusItem = item
+    }
+
+    // A bold "VX" monogram with sound-wave arcs radiating off the X, drawn as a
+    // template image (alpha only) so macOS tints it correctly for light/dark menu
+    // bars and selection highlight.
+    static func menuBarIcon() -> NSImage {
+        let size = NSSize(width: 30, height: 16)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        guard let ctx = NSGraphicsContext.current?.cgContext else { img.unlockFocus(); return img }
+        ctx.setShouldAntialias(true)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+
+        // Sound-wave arcs radiating rightward (three nested arcs, fading out).
+        let cx: CGFloat = 18, cy = size.height / 2
+        for (i, r) in [3.5, 6.5, 9.5].enumerated() {
+            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.6 - CGFloat(i) * 0.13).cgColor)
+            ctx.setLineWidth(1.5 - CGFloat(i) * 0.25)
+            ctx.addArc(center: CGPoint(x: cx, y: cy), radius: r,
+                       startAngle: -.pi / 3.4, endAngle: .pi / 3.4, clockwise: false)
+            ctx.strokePath()
+        }
+
+        // "VX" monogram on the left, heavy weight, full-alpha (solid tint).
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .heavy),
+            .foregroundColor: NSColor.black,
+        ]
+        let s = NSAttributedString(string: "VX", attributes: attrs)
+        let ts = s.size()
+        s.draw(at: NSPoint(x: 0, y: (size.height - ts.height) / 2))
+
+        img.unlockFocus()
+        img.isTemplate = true
+        return img
     }
 
     private func makeMenu() -> NSMenu {

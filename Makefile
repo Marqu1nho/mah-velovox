@@ -2,13 +2,12 @@
 #   • Read Aloud (⌃⌥⌘R) — speak the selected text aloud  ("speak": you hear it)
 #   • Dictate    (⌃⌥S)  — live dictation at the cursor     ("write": you write it)
 #
-# It's ONE app/one binary now, so `make speak` and `make write` both launch the
-# same Velovox.app (both hotkeys are always live; toggle either from the menu bar).
-# Use whichever verb is in your head. One shared set of lifecycle commands.
+# It's ONE app/one binary now (both hotkeys always live; toggle either from the
+# menu bar), so there's a single launch verb.
 #
 # Config: ~/.config/velovox/config.json  (sections: readAloud, speakWrite)
 #
-#   speak / write   launch the existing build, NO rebuild (daily driver)
+#   launch          launch the existing build, NO rebuild (daily driver)
 #   rebuild         recompile + launch (after you change code)
 #   debug           recompile + run in the foreground with live logs
 #   build           compile + bundle + sign only, don't launch
@@ -26,12 +25,11 @@ APP   := Velovox.app
 BIN   := $(APP)/Contents/MacOS/Velovox
 
 .DEFAULT_GOAL := help
-.PHONY: help speak write launch rebuild debug build stop reset stats
+.PHONY: help launch rebuild debug build stop reset stats
 
 help:
 	@echo "Velovox — config at ~/.config/velovox/config.json"
-	@echo "  make speak / make write   launch the current build, NO rebuild — daily driver"
-	@echo "                            (same app; 'speak'=hear it, 'write'=dictate it)"
+	@echo "  make launch               launch the current build, NO rebuild — daily driver"
 	@echo "  make rebuild              recompile + launch (use after changing code)"
 	@echo "  make debug                recompile + run in foreground with live logs"
 	@echo "  make build                compile + bundle + sign only (don't launch)"
@@ -47,9 +45,7 @@ build:
 stop:
 	@pkill -x Velovox 2>/dev/null || true
 
-# speak and write are synonyms — both launch the one unified app.
-speak: launch
-write: launch
+
 launch: stop
 	@nohup $(BIN) >/dev/null 2>&1 &
 	@echo "Velovox launched (no rebuild). ⌃⌥⌘R reads the selection · ⌃⌥S dictates at the cursor."
@@ -66,7 +62,7 @@ reset: stop
 	@tccutil reset Microphone $(APPID) 2>/dev/null || true
 	@tccutil reset Accessibility $(APPID) 2>/dev/null || true
 	@./build.sh
-	@echo "TCC grants reset + rebuilt. Run 'make speak' and re-grant Mic + Accessibility."
+	@echo "TCC grants reset + rebuilt. Run 'make launch' and re-grant Mic + Accessibility."
 
 stats:
 	@test -x $(BIN) || ./build.sh
