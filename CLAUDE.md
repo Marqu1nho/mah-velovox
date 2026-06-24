@@ -3,7 +3,7 @@
 ## Config-accessible features MUST appear in config.json — not just in code
 
 When you add a feature that is meant to be configured via `config.json`
-(Velovox's is at `~/.config/velovox/config.json`, with `readAloud` and
+(VeloVox's is at `~/.config/velovox/config.json`, with `readAloud` and
 `speakWrite` sections), wiring it into the app with an optional field + a
 code-side default is **not enough**. The default only gets written to a *fresh*
 config; an existing file silently falls back to the code default, so the user can

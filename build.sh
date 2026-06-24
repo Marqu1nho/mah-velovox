@@ -5,8 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="Velovox.app"
-BIN="Velovox"
+APP="VeloVox.app"
+BIN="VeloVox"
 BUNDLE_ID="com.marco.velovox"
 
 echo "assembling ${APP}..."
@@ -23,8 +23,8 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Velovox</string>
-  <key>CFBundleDisplayName</key><string>Velovox</string>
+  <key>CFBundleName</key><string>VeloVox</string>
+  <key>CFBundleDisplayName</key><string>VeloVox</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
@@ -32,11 +32,19 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSUIElement</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Velovox transcribes your speech on-device for dictation.</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>Velovox transcribes your speech on-device for dictation.</string>
+  <key>NSMicrophoneUsageDescription</key><string>VeloVox transcribes your speech on-device for dictation.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>VeloVox transcribes your speech on-device for dictation.</string>
+  <key>CFBundleIconFile</key><string>VeloVox</string>
 </dict>
 </plist>
 PLIST
+
+# Wire icon assets: compile the .iconset into a .icns and copy the menu-bar
+# template PDF into Resources so the app can load both from its bundle.
+echo "bundling icons..."
+mkdir -p "${APP}/Contents/Resources"
+iconutil -c icns icons/VeloVox.iconset -o "${APP}/Contents/Resources/VeloVox.icns"
+cp icons/MenuBarIcon.pdf "${APP}/Contents/Resources/MenuBarIcon.pdf"
 
 # Ad-hoc sign with a stable bundle id so TCC has something to key on.
 echo "signing..."

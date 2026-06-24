@@ -1,4 +1,4 @@
-# Velovox — one native macOS menu-bar app, two on-device voice tools:
+# VeloVox — one native macOS menu-bar app, two on-device voice tools:
 #   • Read Aloud (⌃⌥⌘R) — speak the selected text aloud  ("speak": you hear it)
 #   • Dictate    (⌃⌥S)  — live dictation at the cursor     ("write": you write it)
 #
@@ -21,14 +21,14 @@
 # identity), which can invalidate grants, so it clears them for a clean re-grant.
 
 APPID := com.marco.velovox
-APP   := Velovox.app
-BIN   := $(APP)/Contents/MacOS/Velovox
+APP   := VeloVox.app
+BIN   := $(APP)/Contents/MacOS/VeloVox
 
 .DEFAULT_GOAL := help
 .PHONY: help launch rebuild debug build stop reset stats
 
 help:
-	@echo "Velovox — config at ~/.config/velovox/config.json"
+	@echo "VeloVox — config at ~/.config/velovox/config.json"
 	@echo "  make launch               launch the current build, NO rebuild — daily driver"
 	@echo "  make rebuild              recompile + launch (use after changing code)"
 	@echo "  make debug                recompile + run in foreground with live logs"
@@ -43,19 +43,19 @@ build:
 	@./build.sh
 
 stop:
-	@pkill -x Velovox 2>/dev/null || true
+	@pkill -x VeloVox 2>/dev/null || true
 
 
 launch: stop
 	@nohup $(BIN) >/dev/null 2>&1 &
-	@echo "Velovox launched (no rebuild). ⌃⌥⌘R reads the selection · ⌃⌥S dictates at the cursor."
+	@echo "VeloVox launched (no rebuild). ⌃⌥⌘R reads the selection · ⌃⌥S dictates at the cursor."
 
 rebuild: stop build
 	@nohup $(BIN) >/dev/null 2>&1 &
-	@echo "Velovox rebuilt + launched. ⌃⌥⌘R reads · ⌃⌥S dictates."
+	@echo "VeloVox rebuilt + launched. ⌃⌥⌘R reads · ⌃⌥S dictates."
 
 debug: stop build
-	@echo "running Velovox in foreground — ctrl+C to stop. logs below:"
+	@echo "running VeloVox in foreground — ctrl+C to stop. logs below:"
 	@$(BIN)
 
 reset: stop

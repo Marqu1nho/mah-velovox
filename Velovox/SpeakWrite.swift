@@ -440,7 +440,7 @@ final class HUD {
         let f = panel.frame
         VELOVOX.speakWrite.hud.x = Double(f.origin.x); VELOVOX.speakWrite.hud.y = Double(f.origin.y)
         VELOVOX.speakWrite.hud.width = Double(f.width); VELOVOX.speakWrite.hud.height = Double(f.height)
-        VelovoxConfig.save()
+        VeloVoxConfig.save()
     }
 
     // The dim volatile tail is always the trailing run with reduced alpha. We

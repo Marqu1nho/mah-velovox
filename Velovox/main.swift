@@ -12,6 +12,16 @@ import Cocoa
 import Carbon.HIToolbox
 
 // ---------------------------------------------------------------------------
+// Brand — single source of truth for the display name. Change it HERE and every
+// in-app string (menu, About, stats header) follows. The Info.plist name lives in
+// build.sh (a separate build layer Swift can't read), and the lowercase `velovox`
+// bundle id / ~/.config path stay as-is on purpose.
+// ---------------------------------------------------------------------------
+enum Brand {
+    static let name = "VeloVox"
+}
+
+// ---------------------------------------------------------------------------
 // Hidden CLI mode for fidelity testing: `Velovox --script < text` prints the
 // ReadAloud pipeline chunks as JSON and exits without launching the UI.
 // ---------------------------------------------------------------------------
@@ -60,7 +70,7 @@ if CommandLine.arguments.contains("--stats") {
     let thinking      = totalMic > 0 ? (1 - totalSpeaking / totalMic) : 0
     let totalWords    = sessions.map(\.words).reduce(0, +)
     let wpms          = sessions.map(\.wpm)
-    print("Velovox dictation stats")
+    print("\(Brand.name) dictation stats")
     print("=======================")
     print("  7-day avg     : \(avg(last7))  (\(last7.count) sessions)")
     print("  last-50 avg   : \(avg(last50))  (\(last50.count) sessions)")
@@ -111,10 +121,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
+    // Load the designed monochrome halo PDF (a TEMPLATE vector) from the bundle.
+    // macOS tints it for light/dark menu bars. If the asset is missing, fall back
+    // to the hand-drawn icon below.
+    static func menuBarIcon() -> NSImage {
+        if let url = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "pdf"),
+           let img = NSImage(contentsOf: url) {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            return img
+        }
+        NSLog("VeloVox: MenuBarIcon.pdf not found in bundle; using fallback drawn icon")
+        return drawnMenuBarIcon()
+    }
+
     // A small, light "VX" monogram centered INSIDE sound-wave arcs that radiate
     // out both sides (sound coming off the VX). Drawn as a template image (alpha
     // only) so macOS tints it for light/dark menu bars and selection highlight.
-    static func menuBarIcon() -> NSImage {
+    private static func drawnMenuBarIcon() -> NSImage {
         let size = NSSize(width: 36, height: 16)
         let img = NSImage(size: size)
         img.lockFocus()
@@ -157,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let header = NSMenuItem(title: "Velovox", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: Brand.name, action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
@@ -190,11 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let about = NSMenuItem(title: "About Velovox", action: #selector(showAbout), keyEquivalent: "")
+        let about = NSMenuItem(title: "About \(Brand.name)", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
 
-        let quit = NSMenuItem(title: "Quit Velovox", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit \(Brand.name)", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
@@ -216,19 +240,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func editConfig() {
-        let url = VelovoxConfig.fileURL
+        let url = VeloVoxConfig.fileURL
         // Make sure it exists (load() writes it on first run, but be safe).
-        if !FileManager.default.fileExists(atPath: url.path) { _ = VelovoxConfig.load() }
+        if !FileManager.default.fileExists(atPath: url.path) { _ = VeloVoxConfig.load() }
         NSWorkspace.shared.open(url)
     }
 
     @objc private func revealConfig() {
-        NSWorkspace.shared.activateFileViewerSelecting([VelovoxConfig.fileURL])
+        NSWorkspace.shared.activateFileViewerSelecting([VeloVoxConfig.fileURL])
     }
 
     @objc private func showAbout() {
         let alert = NSAlert()
-        alert.messageText = "Velovox"
+        alert.messageText = Brand.name
         alert.informativeText = """
         Two on-device voice tools in one menu-bar app.
 

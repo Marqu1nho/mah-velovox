@@ -1,4 +1,4 @@
-# Velovox
+# VeloVox
 
 **Two on-device voice tools for macOS, in one menu-bar app.** Everything runs on
 Apple's built-in speech stacks — no cloud, no network, no account.
@@ -8,7 +8,7 @@ Apple's built-in speech stacks — no cloud, no network, no account.
 - ⌨️ **Dictate** — `⌃⌥S` — hit the hotkey, talk, and your words are pasted at the
   cursor with a live floating HUD. *("write" — you write it.)*
 
-Velovox lives in your menu bar (the waveform icon). Both hotkeys are always live;
+VeloVox lives in your menu bar (the VX icon). Both hotkeys are always live;
 you can toggle either one from the menu.
 
 > Built and tested on macOS 26 (Apple Silicon). Dictation uses Apple's newer
@@ -24,17 +24,17 @@ run it once past Gatekeeper.
 ```sh
 git clone git@github.com:Marqu1nho/mah-velovox.git
 cd mah-velovox
-make build         # compiles Velovox.app with Xcode's Swift toolchain
+make build         # compiles VeloVox.app with Xcode's Swift toolchain
 make launch        # launches it (menu-bar icon appears)
 ```
 
 ### First launch (Gatekeeper)
 
-Velovox is **ad-hoc signed** (no paid Apple Developer account), so macOS may warn
+VeloVox is **ad-hoc signed** (no paid Apple Developer account), so macOS may warn
 that it's from an unidentified developer. Since you built it yourself, that's fine:
 
-- Right-click `Velovox.app` → **Open** → **Open** in the dialog, **or**
-- `xattr -dr com.apple.quarantine Velovox.app`
+- Right-click `VeloVox.app` → **Open** → **Open** in the dialog, **or**
+- `xattr -dr com.apple.quarantine VeloVox.app`
 
 ### Permissions
 
@@ -153,7 +153,7 @@ Both `readAloud.hotkey` and `speakWrite.hotkey` accept specs like `"ctrl+alt+s"`
 
 ## How it works
 
-Velovox is a single resident `LSUIElement` app (menu bar only, no Dock icon). One
+VeloVox is a single resident `LSUIElement` app (menu bar only, no Dock icon). One
 shared Carbon hotkey handler routes each global hotkey to the right tool by id, so
 the two coexist in one process. Read Aloud captures the selection via the
 Accessibility API and speaks it with `AVSpeechSynthesizer`; Dictate streams mic
@@ -165,11 +165,11 @@ audio through Apple's on-device transcriber into a floating HUD, then pastes the
 ```
 Velovox/          Swift sources (compiled as one module)
   main.swift      entry point, menu bar, --script / --stats CLI modes
-  Config.swift    VelovoxConfig + readAloud/speakWrite sections (+ migration)
+  Config.swift    VeloVoxConfig + readAloud/speakWrite sections (+ migration)
   HotKeys.swift   shared global-hotkey manager (routes by id)
   ReadAloud.swift / SpeakWrite.swift / RawVoice.swift   the two tools
   Capture, Clean, Parse, Pipeline, Regex, Script, Speaker, Transport  (Read Aloud)
-build.sh          compile → bundle → ad-hoc sign Velovox.app
+build.sh          compile → bundle → ad-hoc sign VeloVox.app
 config.example.json
 ```
 

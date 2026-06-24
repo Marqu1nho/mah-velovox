@@ -229,7 +229,7 @@ struct SpeakWriteConfig: Codable {
 // MARK: - Top-level Velovox config (the on-disk file)
 // ===========================================================================
 
-struct VelovoxConfig: Codable {
+struct VeloVoxConfig: Codable {
     var readAloud: ReadAloudConfig
     var speakWrite: SpeakWriteConfig
 
@@ -248,7 +248,7 @@ struct VelovoxConfig: Codable {
         speakWrite = (try? c.decode(SpeakWriteConfig.self, forKey: .speakWrite)) ?? .fallback
     }
 
-    static let fallback = VelovoxConfig(readAloud: .fallback, speakWrite: .fallback)
+    static let fallback = VeloVoxConfig(readAloud: .fallback, speakWrite: .fallback)
 
     // ~/.config/velovox/config.json — the one file to rule them both.
     static var fileURL: URL {
@@ -264,7 +264,7 @@ struct VelovoxConfig: Codable {
             .appendingPathComponent(".config/speakwrite/config.json")
     }
 
-    static func load() -> VelovoxConfig {
+    static func load() -> VeloVoxConfig {
         let fm = FileManager.default
         let url = fileURL
 
@@ -274,13 +274,13 @@ struct VelovoxConfig: Codable {
             let ra = decodeOld(ReadAloudConfig.self, from: oldReadAloudURL)
             let sw = decodeOld(SpeakWriteConfig.self, from: oldSpeakWriteURL)
             let migrated = (ra != nil || sw != nil)
-            let cfg = VelovoxConfig(readAloud: ra ?? .fallback, speakWrite: sw ?? .fallback)
+            let cfg = VeloVoxConfig(readAloud: ra ?? .fallback, speakWrite: sw ?? .fallback)
             write(cfg, to: url)
             NSLog("velovox: \(migrated ? "MIGRATED old configs into" : "wrote default config ->") \(url.path)")
             return cfg
         }
         do {
-            let cfg = try JSONDecoder().decode(VelovoxConfig.self, from: Data(contentsOf: url))
+            let cfg = try JSONDecoder().decode(VeloVoxConfig.self, from: Data(contentsOf: url))
             NSLog("velovox: loaded config <- \(url.path) (\(cfg.speakWrite.replacements.count) replacements)")
             return cfg
         } catch {
@@ -300,7 +300,7 @@ struct VelovoxConfig: Codable {
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
-    private static func write(_ cfg: VelovoxConfig, to url: URL) {
+    private static func write(_ cfg: VeloVoxConfig, to url: URL) {
         let fm = FileManager.default
         try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let e = JSONEncoder()
@@ -312,4 +312,4 @@ struct VelovoxConfig: Codable {
     }
 }
 
-var VELOVOX = VelovoxConfig.load()
+var VELOVOX = VeloVoxConfig.load()
