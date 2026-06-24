@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Velovox.app from the Swift sources in Velovox/ (single binary, no Xcode
+# Build Velovox.app from the Swift sources in VeloVox/ (single binary, no Xcode
 # project). Produces Velovox.app at the repo root, ad-hoc signed with a stable
 # bundle id so TCC keys its Mic/Accessibility grants on identity, not the hash.
 set -euo pipefail
@@ -15,8 +15,8 @@ mkdir -p "${APP}/Contents/MacOS"
 
 echo "compiling..."
 # Compile straight into the bundle — the output binary name "Velovox" would
-# otherwise collide with the Velovox/ source directory.
-xcrun -sdk macosx swiftc -O Velovox/*.swift -o "${APP}/Contents/MacOS/${BIN}"
+# otherwise collide with the VeloVox/ source directory.
+xcrun -sdk macosx swiftc -O VeloVox/*.swift -o "${APP}/Contents/MacOS/${BIN}"
 
 cat > "${APP}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

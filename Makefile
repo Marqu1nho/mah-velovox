@@ -43,7 +43,7 @@ build:
 	@./build.sh
 
 stop:
-	@pkill -x VeloVox 2>/dev/null || true
+	@pkill -x VeloVox 2>/dev/null; pkill -x Velovox 2>/dev/null || true
 
 
 launch: stop

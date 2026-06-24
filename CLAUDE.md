@@ -12,7 +12,7 @@ never see or discover the knob to edit it.
 Whenever a new config-backed feature is added, do ALL of:
 
 1. Add the field to the relevant `*Config` sub-struct (Codable) in
-   `Velovox/Config.swift`.
+   `VeloVox/Config.swift`.
 2. Add it to that struct's `fallback`/defaults block in code.
 3. **Add it to the on-disk config** so the user can actually see and edit it —
    both the committed `config.example.json` AND the user's real

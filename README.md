@@ -163,7 +163,7 @@ audio through Apple's on-device transcriber into a floating HUD, then pastes the
 ## Project layout
 
 ```
-Velovox/          Swift sources (compiled as one module)
+VeloVox/          Swift sources (compiled as one module)
   main.swift      entry point, menu bar, --script / --stats CLI modes
   Config.swift    VeloVoxConfig + readAloud/speakWrite sections (+ migration)
   HotKeys.swift   shared global-hotkey manager (routes by id)
