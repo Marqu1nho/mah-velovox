@@ -1,0 +1,6 @@
+# never commit the 1.4GB python venv or scratch intermediates
+.venv/
+*.aiff
+.DS_Store
+*_overgen_*.wav
+*_truncated_backup.wav
