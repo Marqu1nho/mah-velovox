@@ -23,6 +23,7 @@
 APPID := com.marco.velovox
 APP   := VeloVox.app
 BIN   := $(APP)/Contents/MacOS/VeloVox
+LOG   := $(HOME)/.config/velovox/velovox.log
 
 .DEFAULT_GOAL := help
 .PHONY: help launch rebuild debug build stop reset stats test clean
@@ -49,12 +50,14 @@ stop:
 
 
 launch: stop
-	@nohup $(BIN) >/dev/null 2>&1 &
+	@nohup $(BIN) >$(LOG) 2>&1 &
 	@echo "VeloVox launched (no rebuild). ⌃⌥⌘R reads the selection · ⌃⌥S dictates at the cursor."
+	@echo "  logs → $(LOG)"
 
 rebuild: stop build
-	@nohup $(BIN) >/dev/null 2>&1 &
+	@nohup $(BIN) >$(LOG) 2>&1 &
 	@echo "VeloVox rebuilt + launched. ⌃⌥⌘R reads · ⌃⌥S dictates."
+	@echo "  logs → $(LOG)"
 
 debug: stop build
 	@echo "running VeloVox in foreground — ctrl+C to stop. logs below:"

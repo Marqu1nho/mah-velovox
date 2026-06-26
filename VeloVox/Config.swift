@@ -168,11 +168,11 @@ struct DictationConfig: Codable {
     // Write mode: "formal" (default, engine casing untouched) or "casual".
     var mode: String? = nil
     var capitalExceptions: [String]? = nil
-    // alwaysAppearCommitted: in dictation mode, paint ALL text white (the live guess
-    // never reads as gray), because dictation holds text volatile for long stretches.
-    // Default true. false → two-tone gray/white like speech mode. (Speech mode always
-    // shows the gray volatile guess regardless of this flag.)
-    var alwaysAppearCommitted: Bool? = nil
+    // lockMs: how long the live gray guess may sit unchanged before we PROMOTE it to
+    // committed (white) ourselves. Apple's dictation engine holds text volatile for
+    // long stretches, so we lock on a short speech pause instead of waiting for its
+    // isFinal. 0 = never self-lock (wait for the engine). Default 250.
+    var lockMs: Int? = nil
 }
 
 struct SpeakWriteConfig: Codable {
@@ -213,10 +213,9 @@ struct SpeakWriteConfig: Codable {
     var dictationMode: String { dictation?.mode ?? "formal" }
     var dictationCasual: Bool { dictationMode == "casual" }
     var dictationCapitalExceptions: [String] { dictation?.capitalExceptions ?? ["I"] }
-    var dictationAlwaysCommitted: Bool { dictation?.alwaysAppearCommitted ?? true }
-    // Should the live volatile guess render WHITE (no gray two-tone)? Only when the
-    // dictation engine is active AND its "always appear committed" toggle is on.
-    var volatileWhitens: Bool { engineKind == "dictation" && dictationAlwaysCommitted }
+    // Pause (ms) after which the gray live guess freezes into committed text. 0 = wait
+    // for the engine's own isFinal. Clamped non-negative.
+    var dictationLockMs: Int { max(0, dictation?.lockMs ?? 250) }
     var metricsEnabled: Bool { metrics?.enabled ?? true }
     var metricSilenceGrace: Double { metrics?.silenceGraceSeconds ?? 1.0 }
     var metricVoiceThreshold: Double { metrics?.voiceThreshold ?? 0.15 }
@@ -226,7 +225,7 @@ struct SpeakWriteConfig: Codable {
     static let fallback = SpeakWriteConfig(
         locale: "en-US",
         engine: "speech",
-        dictation: DictationConfig(punctuation: false, emoji: false, mode: "formal", capitalExceptions: ["I"], alwaysAppearCommitted: true),
+        dictation: DictationConfig(punctuation: false, emoji: false, mode: "formal", capitalExceptions: ["I"], lockMs: 250),
         displayMode: "hud",
         hotkey: "ctrl+alt+s",
         hud: HUDConfig(alpha: 0.5, fontSize: 22, width: 560, height: 160, commitOnly: false),

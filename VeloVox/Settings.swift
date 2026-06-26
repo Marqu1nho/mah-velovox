@@ -82,6 +82,10 @@ struct SettingsView: View {
     // after each mutation (the bindings write into a plain global `var`, not an
     // @Published, so we nudge the view ourselves).
     @State private var tick = 0
+    // Slider-only draft: the Slider drives THIS, not VELOVOX directly, so dragging
+    // never triggers bump()/re-render mid-gesture (which made the thumb jump to the
+    // end and stick). We flush to config in .onChange. Seeded from config on open.
+    @State private var lockMsDraft = Double(VELOVOX.speakWrite.dictationLockMs)
 
     // Available TTS voices for the Read-Aloud picker (id + display name).
     private let voices: [(id: String, name: String)] =
@@ -270,9 +274,17 @@ struct SettingsView: View {
             Toggle("Spoken emoji", isOn: dictBindingBool(
                 { $0.emoji }, { $0.emoji = $1 }, fallback: false))
                 .disabled(!isDictation)
-            Toggle("Make Dictation always appear committed", isOn: dictBindingBool(
-                { $0.alwaysAppearCommitted }, { $0.alwaysAppearCommitted = $1 }, fallback: true))
-                .disabled(!isDictation)
+            VStack(alignment: .leading) {
+                let lk = Int(lockMsDraft)
+                Text("Pause-to-lock delay: \(lk == 0 ? "off (wait for engine)" : "\(lk) ms")")
+                Slider(value: $lockMsDraft, in: 0...800, step: 50)
+                    .onChange(of: lockMsDraft) { _, v in
+                        var d = VELOVOX.speakWrite.dictation ?? DictationConfig()
+                        d.lockMs = Int(v); VELOVOX.speakWrite.dictation = d
+                    }
+                Text("How long you pause before spoken text locks in (forces the engine to finalize). Lower = snappier.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.disabled(!isDictation)
 
             // --- HUD-mode-only knobs ---
             Toggle("HUD: committed text only", isOn: Binding(

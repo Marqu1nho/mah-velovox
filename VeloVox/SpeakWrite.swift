@@ -213,13 +213,12 @@ final class HUD {
             .foregroundColor: NSColor.white,
         ]
         // The live "guess" tail. We TAG it with .vvVolatile so we can locate it
-        // exactly (see volatileRange) — color is now free to be anything. Color it
-        // white when the engine wants no two-tone (dictation w/ volatileText off),
-        // otherwise dim gray like speech mode has always shown.
+        // exactly (see volatileRange) — color is free to be anything. It always renders
+        // dim gray so the volatile/committed boundary stays visible; promote-on-pause
+        // (SpeakWriteController) flips it to bright committed text on a short pause.
         volAttrs = [
             .font: NSFont.systemFont(ofSize: fontSize),
-            .foregroundColor: VELOVOX.speakWrite.volatileWhitens
-                ? NSColor.white : NSColor(white: 1.0, alpha: 0.45),
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.45),
             .vvVolatile: true,
         ]
         // Assign before any [weak self] closure below so self is fully initialized.
@@ -482,11 +481,21 @@ final class HUD {
 
     func reset() {
         editing = false
-        textView.insertionPointColor = .clear   // hide caret until you engage
         textView.string = ""
-        // commit-only: no dim prompt either — the box starts empty and fills with
-        // committed words only (the start cue already signals "listening").
-        setVolatile(VELOVOX.speakWrite.hudCommitOnly ? "" : "listening…")
+        setVolatile("")                          // empty — the blinking caret is the anchor now
+        // A prominent blinking blue caret sits at the start, like a pen on paper: words
+        // append to its left and it rides to the end (rideCaretToEnd) until you take
+        // edit control, at which point it turns white to match your typed text.
+        textView.insertionPointColor = .systemBlue
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+    }
+
+    // While the HUD is auto-writing (you haven't clicked/arrowed in yet) the blue caret
+    // rides at the very end — to the right of the live gray guess — like a pen tip. Once
+    // you take edit control we leave your caret/selection wherever you put it.
+    private func rideCaretToEnd() {
+        guard !editing, let ts = textView.textStorage else { return }
+        textView.setSelectedRange(NSRange(location: ts.length, length: 0))
     }
 
     // Reveal the caret + mark that the user has taken edit control.
@@ -529,26 +538,23 @@ final class HUD {
         if insertAt > 0 {
             let prev = nsStr.substring(with: NSRange(location: insertAt - 1, length: 1))
             let prevIsWS = prev.rangeOfCharacter(from: .whitespacesAndNewlines) != nil
-            if !prevIsWS && !s.hasPrefix("\n") { piece = " " + s }
+            // Join with exactly one space: skip if the previous char is already whitespace
+            // OR the incoming chunk already leads with whitespace (forced segments do — that
+            // was the double-space). Covers newlines too (they're whitespace).
+            let startsWS = s.first?.isWhitespace ?? false
+            if !prevIsWS && !startsWS { piece = " " + s }
         }
         if VELOVOX.speakWrite.dictationCasual {
-            piece = WriteMode.casual(piece, sentenceStart: sentenceStartBefore(insertAt, in: nsStr))
+            // Every committed chunk is a fresh engine segment whose first word the engine
+            // capitalizes — so in casual mode we always treat the chunk start as a
+            // sentence start (force-finalize splits mid-sentence; without this the split
+            // word, e.g. "However", keeps a spurious capital). Exceptions (I) still spared.
+            piece = WriteMode.casual(piece, sentenceStart: true)
         }
         let sel = textView.selectedRange()
         ts.insert(NSAttributedString(string: piece, attributes: commAttrs), at: insertAt)
         if sel.location + sel.length <= insertAt { textView.setSelectedRange(sel) }
-    }
-
-    // Look back from `loc` over whitespace for the last committed character: a
-    // sentence opens at the document start (nothing before) or right after [.!?].
-    private func sentenceStartBefore(_ loc: Int, in str: NSString) -> Bool {
-        var k = loc
-        while k > 0 {
-            let ch = str.substring(with: NSRange(location: k - 1, length: 1))
-            if ch.rangeOfCharacter(from: .whitespacesAndNewlines) != nil { k -= 1; continue }
-            return ch == "." || ch == "!" || ch == "?"
-        }
-        return true
+        rideCaretToEnd()
     }
 
     // Replace the dim tail in place with the live volatile guess.
@@ -559,10 +565,11 @@ final class HUD {
         let sel = textView.selectedRange()
         var s = s
         if VELOVOX.speakWrite.dictationCasual, !s.isEmpty {
-            s = WriteMode.casual(s, sentenceStart: sentenceStartBefore(range.location, in: ts.string as NSString))
+            s = WriteMode.casual(s, sentenceStart: true)   // chunk start == sentence start in casual
         }
         ts.replaceCharacters(in: range, with: NSAttributedString(string: s, attributes: volAttrs))
         if sel.location + sel.length <= range.location { textView.setSelectedRange(sel) }
+        rideCaretToEnd()
         if wasAtBottom { textView.scrollToEndOfDocument(nil) }
     }
 
@@ -937,13 +944,40 @@ final class Dictation {
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var committedCount = 0   // chars finalized this session (for the stop log)
+    private var lastVoiceAt = Date()        // wall-clock of the last buffer carrying voice energy
+    private var hasPendingVolatile = false  // a volatile (non-final) result arrived since the last finalize
 
     var onSegment: ((Bool, String) -> Void)?   // (isFinal, text)
     var onLevel: ((Float) -> Void)?            // live mic level 0…1 (for the pulse orb)
 
     func start() {
         committedCount = 0
+        hasPendingVolatile = false
+        lastVoiceAt = Date()
         Task { await run() }
+    }
+
+    // Force-finalize on a speech pause. The dictation engine otherwise holds the whole
+    // utterance volatile (revising words arbitrarily deep — see the trace) until a big
+    // pause or stop, so committed text never settles. After `lockMs` of silence we ask
+    // the analyzer to finalize the pending span WITHOUT finishing the stream. The engine
+    // draws the commit boundary itself (clean isFinal + volatile reset), so committed
+    // text is engine-stable and our side keeps the simple append/replace loop — no
+    // diffing, no duplication. lockMs = 0 disables this (let the engine decide).
+    private func maybeFinalizeOnPause(level: Float) {
+        let lockMs = VELOVOX.speakWrite.dictationLockMs
+        guard lockMs > 0, analyzer != nil else { return }
+        let now = Date()
+        if level > Float(VELOVOX.speakWrite.metricVoiceThreshold) {
+            lastVoiceAt = now                 // still talking — reset the silence clock
+        } else if hasPendingVolatile, now.timeIntervalSince(lastVoiceAt) * 1000 >= Double(lockMs) {
+            // Quiet for lockMs AND there's real un-finalized speech: lock it in. Fires once
+            // per batch — re-arms only when a NEW volatile result arrives, so it stays silent
+            // through think-pauses with nothing pending (no churn, no nudging text in).
+            hasPendingVolatile = false
+            NSLog("speakwrite: pause \(lockMs)ms -> force finalize(through: nil)")
+            Task { [weak self] in try? await self?.analyzer?.finalize(through: nil) }
+        }
     }
 
     func stop(_ done: @escaping () -> Void) {
@@ -982,7 +1016,10 @@ final class Dictation {
                         let txt = Replacements.apply(String(r.text.characters))
                         let isFinal = r.isFinal
                         if isFinal { self.committedCount += txt.count }
-                        await MainActor.run { self.onSegment?(isFinal, txt) }
+                        await MainActor.run {
+                            self.hasPendingVolatile = !isFinal   // re-arm pause-lock on new speech
+                            self.onSegment?(isFinal, txt)
+                        }
                     }
                 } catch { NSLog("speakwrite: results error \(error)") }
             }
@@ -998,7 +1035,10 @@ final class Dictation {
                         let txt = Replacements.apply(String(r.text.characters))
                         let isFinal = r.isFinal
                         if isFinal { self.committedCount += txt.count }
-                        await MainActor.run { self.onSegment?(isFinal, txt) }
+                        await MainActor.run {
+                            self.hasPendingVolatile = !isFinal   // re-arm pause-lock on new speech
+                            self.onSegment?(isFinal, txt)
+                        }
                     }
                 } catch { NSLog("speakwrite: results error \(error)") }
             }
@@ -1027,7 +1067,10 @@ final class Dictation {
                     let rms = (n > 0) ? sqrtf(sumSq / Float(n)) : 0
                     let db = 20 * log10f(max(rms, 1e-7))
                     let norm = max(0, min(1, (db + 50) / 40))
-                    DispatchQueue.main.async { self?.onLevel?(norm) }
+                    DispatchQueue.main.async {
+                        self?.maybeFinalizeOnPause(level: norm)
+                        self?.onLevel?(norm)
+                    }
                 }
                 let ratio = fmt.sampleRate / inFmt.sampleRate
                 let cap = AVAudioFrameCount(Double(buf.frameLength) * ratio + 1024)
@@ -1109,11 +1152,12 @@ final class SpeakWriteController {
     init() {
         dictation.onSegment = { [weak self] isFinal, text in
             guard let self else { return }
+            NSLog("speakwrite: seg final=\(isFinal) len=\(text.count) [\(text)]")
             if isFinal {
-                self.hud.appendFinal(text)
+                self.hud.appendFinal(text)   // engine-committed segment -> permanent
                 self.hud.setVolatile("")
             } else if !VELOVOX.speakWrite.hudCommitOnly {
-                self.hud.setVolatile(text)   // skip the live gray guess in commit-only
+                self.hud.setVolatile(text)   // live guess; REPLACES the tail (never appends)
             }
         }
         dictation.onLevel = { [weak self] level in
@@ -1129,7 +1173,12 @@ final class SpeakWriteController {
             Cue.stop()                 // soft "captured" confirmation (silent unless configured)
             dictation.stop { [weak self] in
                 guard let self else { return }
-                let edited = self.hud.editableText().trimmingCharacters(in: .whitespacesAndNewlines)
+                // Collapse any run of spaces/tabs to a single space (newlines preserved) so
+                // double-spaces from forced-finalize fragments / edits never reach the paste —
+                // it's going into Teams/Slack where that reads as sloppy.
+                let edited = self.hud.editableText()
+                    .replacingOccurrences(of: "[ \\t]{2,}", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 let wasKey = self.hud.panelIsKey
                 NSLog("speakwrite: pasting \(edited.count) chars (edited; panelWasKey=\(wasKey))")
                 // Smart WPM: count words in the final transcript over speaking time.

@@ -64,7 +64,7 @@
       "capitalExceptions" : [
         "I"
       ],
-      "alwaysAppearCommitted" : true,
+      "lockMs" : 250,
       "emoji" : false,
       "mode" : "formal",
       "punctuation" : false
